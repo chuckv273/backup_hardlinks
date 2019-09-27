@@ -214,10 +214,10 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
                         win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                 except Exception:
                     pass
-    write_file_infos(hash_targets, 'C:\\Backup\\g-hash.csv')
-    write_file_infos(hash_sources, 'C:\\Backup\\c-hash.csv')
-    for hash_name in ['g-hash.csv', 'c-hash.csv']:
-        shutil.copy2(os.path.join('C:\\Backup', hash_name), os.path.join(backup_dir, hash_name))
+    write_file_infos(hash_targets, dest_hash_csv)
+    write_file_infos(hash_sources, source_hash_csv)
+    for hash_name in [dest_hash_csv, source_hash_csv]:
+        shutil.copy2(hash_name, os.path.join(backup_dir, os.path.basename(hash_name)))
     return new_files, new_bytes
 
 
@@ -248,3 +248,4 @@ if args.config_file:
         print('Config file missing required values. No backup.')
 else:
     print('No config file specified.')
+sys.exit(0)
