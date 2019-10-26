@@ -56,12 +56,12 @@ def populate_file_infos(file_infos, file_name, check_hashes):
         csvfile.close()
     except Exception:
         pass
-    check_file_info(file_infos, check_hashes)
 
 
 def populate_hash_dict(hash_dict, file_name, check_hashes):
     file_infos = []
     populate_file_infos(file_infos, file_name, check_hashes)
+    check_file_info(file_infos, check_hashes)
     for info in file_infos:
         hash_dict[info[1]] = info
 
@@ -150,9 +150,9 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
     """
     hash_targets = {}
     hash_sources = {}
-    print('Checking dest hashes')
+    print('Loading dest hashes')
     populate_hash_dict(hash_targets, dest_hash_csv, check_dest_hashes)
-    print('Checking source hashes')
+    print('Load source hashes')
     populate_name_dict(hash_sources, source_hash_csv)
     new_bytes = 0
     print('Executing backup')
@@ -179,41 +179,50 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
             for file_name in fnames:
                 try:
                     file_path = os.path.join(dpath, file_name)
-                    sr = os.stat(file_path)
-                    if file_path in hash_sources:
-                        info = hash_sources[file_path]
+                    attributes = win32api.GetFileAttributes(file_path)
+                    # skip dehydrated files
+                    # win32con does not define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x400000
+                    #  or FILE_ATTRIBUTE_RECALL_ON_OPEN 0x40000
+                    if (attributes & win32con.FILE_ATTRIBUTE_OFFLINE) == 0 and \
+                        (attributes & 0x400000) == 0 and \
+                        (attributes & 0x40000) == 0 :
+                        sr = os.stat(file_path)
+                        if file_path in hash_sources:
+                            info = hash_sources[file_path]
+                        else:
+                            info = None
+                        if info and (sr.st_size == int(info[2])) and (sr.st_mtime_ns == int(info[3])) and \
+                                (sr.st_ctime_ns == int(info[4])):
+                            hash_val = info[1]
+                        else:
+                            print('Hashing {}'.format(file_path))
+                            hash_val = hash_file(file_path)
+                            hash_sources[file_path] = [file_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
+                        drive, path = os.path.splitdrive(file_path)
+                        path = path[1:]
+                        dest_path = os.path.join(backup_dir, path)
+                        use_copy = True
+                        if hash_val in hash_targets:
+                            # make link
+                            # print("Link {} to {}".format(dest_path, hash_targets[hash][0]))
+                            try:
+                                os.link(hash_targets[hash_val][0], dest_path)
+                                use_copy = False
+                            except Exception:
+                                pass
+                        if use_copy:
+                            # copy new file
+                            print('new file {}'.format(file_path))
+                            shutil.copy2(file_path, dest_path)
+                            sr = os.stat(dest_path)
+                            new_bytes += sr.st_size
+                            hash_targets[hash_val] = [dest_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
+                            new_files += 1
+                            win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                     else:
-                        info = None
-                    if info and (sr.st_size == int(info[2])) and (sr.st_mtime_ns == int(info[3])) and \
-                            (sr.st_ctime_ns == int(info[4])):
-                        hash_val = info[1]
-                    else:
-                        print('Hashing {}'.format(file_path))
-                        hash_val = hash_file(file_path)
-                        hash_sources[file_path] = [file_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
-                    drive, path = os.path.splitdrive(file_path)
-                    path = path[1:]
-                    dest_path = os.path.join(backup_dir, path)
-                    use_copy = True
-                    if hash_val in hash_targets:
-                        # make link
-                        # print("Link {} to {}".format(dest_path, hash_targets[hash][0]))
-                        try:
-                            os.link(hash_targets[hash_val][0], dest_path)
-                            use_copy = False
-                        except Exception:
-                            pass
-                    if use_copy:
-                        # copy new file
-                        print('new file {}'.format(file_path))
-                        shutil.copy2(file_path, dest_path)
-                        sr = os.stat(dest_path)
-                        new_bytes += sr.st_size
-                        hash_targets[hash_val] = [dest_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
-                        new_files += 1
-                        win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
+                        print('Skipping dehydrated file {}'.format(file_path))
                 except Exception:
-                    pass
+                    print('Exception handling file {}'.format(file_path))
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
