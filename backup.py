@@ -10,6 +10,7 @@ import win32con
 import sys
 import yaml
 import argparse
+import zipfile
 
 
 def hash_file(file_path):
@@ -47,6 +48,19 @@ def check_file_info(file_infos, always_check_hash):
         file_infos.append(v)
 
 
+def check_file_info_exists(file_infos):
+    removals = []
+    for i in range(len(file_infos)):
+        try:
+            if not os.path.exists(file_infos[i][0]):
+                removals.append(i)
+        except Exception:
+            removals.append(i)
+    removals.reverse()
+    for i in removals:
+        file_infos.pop(i)
+
+
 def populate_file_infos(file_infos, file_name, check_hashes):
     try:
         csvfile = open(file_name, 'r', newline='')
@@ -69,6 +83,7 @@ def populate_hash_dict(hash_dict, file_name, check_hashes):
 def populate_name_dict(name_dict, file_name):
     file_infos = []
     populate_file_infos(file_infos, file_name, False)
+    check_file_info_exists(file_infos)
     for info in file_infos:
         name_dict[info[0]] = info
 
@@ -137,6 +152,24 @@ def copy_mailbox(backup_dir):
             file_size = stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
     return file_count, file_size
+
+
+def copy_c_backup_zip(backup_dir):
+    source_dir = r'C:\Backup'
+    file_name = 'backup.zip'
+    target_name = os.path.join(backup_dir, file_name)
+    available = False
+    file_size = 0
+    file_count = 0
+    # test if we can read the mail file. File is possible open and not available for backup
+    zip = zipfile.ZipFile(target_name, "w", zipfile.ZIP_DEFLATED)
+    for file in os.listdir(source_dir):
+        source_file = os.path.join(source_dir, file)
+        if os.path.isfile(source_file):
+            zip.write(source_file, arcname=file)
+    zip.close()
+    sr = os.stat(target_name)
+    return 1, sr.st_size
 
 
 def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_hashes):
@@ -251,11 +284,18 @@ if args.config_file:
         copy_mail = True
         if 'copy_mail' in config and not config['copy_mail']:
             copy_mail = False
+        copy_c_backup = True
+        if 'copy_c_backup' in config and not config['copy_c_backup']:
+            copy_c_backup = False
         os.makedirs(backup_dir, exist_ok=True)
         new_files = 0
         new_bytes = 0
         if copy_mail:
             counts = copy_mailbox(backup_dir)
+            new_files += counts[0]
+            new_bytes += counts[1]
+        if copy_c_backup:
+            counts = copy_c_backup_zip(backup_dir)
             new_files += counts[0]
             new_bytes += counts[1]
         counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
