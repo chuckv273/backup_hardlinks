@@ -241,13 +241,23 @@ if args.config_file:
     with open(args.config_file, 'r') as stream:
         config = yaml.safe_load(stream)
     if 'dest' in config and 'sources' in config and 'dest_hashes' in config and 'source_hashes' in config:
-        backup_dir = os.path.join(config['dest'], date.today().strftime('%Y-%m-%d'))
+        use_date = True
+        if 'use_date' in config and not config['use_date']:
+            use_date = False
+        if use_date:
+            backup_dir = os.path.join(config['dest'], date.today().strftime('%Y-%m-%d'))
+        else:
+            backup_dir = config['dest']
+        copy_mail = True
+        if 'copy_mail' in config and not config['copy_mail']:
+            copy_mail = False
         os.makedirs(backup_dir, exist_ok=True)
         new_files = 0
         new_bytes = 0
-        counts = copy_mailbox(backup_dir)
-        new_files += counts[0]
-        new_bytes += counts[1]
+        if copy_mail:
+            counts = copy_mailbox(backup_dir)
+            new_files += counts[0]
+            new_bytes += counts[1]
         counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
                            args.check_hashes)
         new_files += counts[0]
