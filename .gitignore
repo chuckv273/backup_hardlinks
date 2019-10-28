@@ -1,2 +1,5 @@
 .idea
 venv
+dest-hash.csv
+source-hash.csv
+test.yaml
