@@ -291,13 +291,19 @@ if args.config_file:
         new_files = 0
         new_bytes = 0
         if copy_mail:
-            counts = copy_mailbox(backup_dir)
-            new_files += counts[0]
-            new_bytes += counts[1]
+            try:
+                counts = copy_mailbox(backup_dir)
+                new_files += counts[0]
+                new_bytes += counts[1]
+            except:
+                print('Failure copying mail data. File likely open.')
         if copy_c_backup:
-            counts = copy_c_backup_zip(backup_dir)
-            new_files += counts[0]
-            new_bytes += counts[1]
+            try:
+                counts = copy_c_backup_zip(backup_dir)
+                new_files += counts[0]
+                new_bytes += counts[1]
+            except:
+                print('Failure copying backup directory.')
         counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
                            args.check_hashes)
         new_files += counts[0]
