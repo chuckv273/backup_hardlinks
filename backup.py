@@ -273,6 +273,11 @@ if args.config_file:
     config = {}
     with open(args.config_file, 'r') as stream:
         config = yaml.safe_load(stream)
+    if 'sources_file' in config:
+        with open(config['sources_file'], 'r') as stream:
+            sources = yaml.safe_load(stream)
+            if 'sources' in sources:
+                config['sources'] = sources['sources']
     if 'dest' in config and 'sources' in config and 'dest_hashes' in config and 'source_hashes' in config:
         use_date = True
         if 'use_date' in config and not config['use_date']:
