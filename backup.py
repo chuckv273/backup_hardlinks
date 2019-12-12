@@ -4,13 +4,42 @@ import os
 from datetime import date
 import shutil
 import glob
-import subprocess
 import win32api
 import win32con
 import sys
 import yaml
 import argparse
 import zipfile
+import bsdiff4
+
+
+class FileInfo:
+    def __init__(self, path=None, hash=None, stat_info=None, csv_row=None):
+        if csv_row:
+            self.path = csv_row[0]
+            self.hash = csv_row[1]
+            self.size = int(csv_row[2])
+            self.mtime_ns = int(csv_row[3])
+            self.ctime_ns = int(csv_row[4])
+        else:
+            if path and hash and stat_info:
+                self.path = path
+                self.hash = hash
+                self.size = stat_info.st_size
+                self.mtime_ns = stat_info.st_mtime_ns
+                self.ctime_ns = stat_info.st_ctime_ns
+            else:
+                raise ValueError
+
+
+    def make_csv_row(self):
+        return [self.path, self.hash, self.size, self.mtime_ns, self.ctime_ns]
+
+
+    def has_stat_changed(self, stat_info):
+        return (self.size != stat_info.st_size or
+                self.mtime_ns != stat_info.st_mtime_ns or
+                self.ctime_ns != stat_info.st_ctime_ns)
 
 
 def hash_file(file_path):
@@ -30,15 +59,14 @@ def check_file_info(file_infos, always_check_hash):
     additions = []
     for i in range(len(file_infos)):
         try:
-            sr = os.stat(file_infos[i][0])
-            file_changed = ((sr.st_size != int(file_infos[i][2])) or (sr.st_mtime_ns != int(file_infos[i][3])) or
-                           (sr.st_ctime_ns != int(file_infos[i][4])))
-            if file_changed or always_check_hash:
-                hash_val = hash_file(file_infos[i][0])
-                if file_changed or (hash_val != file_infos[i][1]):
-                    print('Mismatch file info: {}'.format(file_infos[i][0]))
+            sr = os.stat(file_infos[i].path)
+            stat_changed = file_infos[i].has_stat_changed(sr)
+            if stat_changed or always_check_hash:
+                hash_val = hash_file(file_infos[i].path)
+                if stat_changed or (hash_val != file_infos[i].hash):
+                    print('Mismatch file info: {}'.format(file_infos[i].path))
                     removals.append(i)
-                    additions.append([file_infos[i][0], hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns])
+                    additions.append(FileInfo(file_infos[i].path, hash_val, sr))
         except Exception:
             removals.append(i)
     removals.reverse()
@@ -52,7 +80,7 @@ def check_file_info_exists(file_infos):
     removals = []
     for i in range(len(file_infos)):
         try:
-            if not os.path.exists(file_infos[i][0]):
+            if not os.path.exists(file_infos[i].path):
                 removals.append(i)
         except Exception:
             removals.append(i)
@@ -61,52 +89,45 @@ def check_file_info_exists(file_infos):
         file_infos.pop(i)
 
 
-def populate_file_infos(file_infos, file_name, check_hashes):
+def populate_file_infos(file_infos, file_name):
     try:
         csvfile = open(file_name, 'r', newline='')
         reader = csv.reader(csvfile)
         for row in reader:
-            file_infos.append(row)
+            file_infos.append(FileInfo(csv_row=row))
         csvfile.close()
-    except Exception:
+    except OSError:
         pass
 
 
 def populate_hash_dict(hash_dict, file_name, check_hashes):
     file_infos = []
-    populate_file_infos(file_infos, file_name, check_hashes)
+    populate_file_infos(file_infos, file_name)
     check_file_info(file_infos, check_hashes)
     for info in file_infos:
-        hash_dict[info[1]] = info
+        hash_dict[info.hash] = info
 
 
 def populate_name_dict(name_dict, file_name):
     file_infos = []
-    populate_file_infos(file_infos, file_name, False)
+    populate_file_infos(file_infos, file_name)
     check_file_info_exists(file_infos)
     for info in file_infos:
-        name_dict[info[0]] = info
-
-
-def populate_g_list():
-    csvfile = open('C:\\Backup\\g-hash.csv', 'w', newline='')
-    writer = csv.writer(csvfile)
-    for (dpath, dnames, fnames) in os.walk('G:\\Backups'):
-        print(dpath)
-        for file_name in fnames:
-            file_path = os.path.join(dpath, file_name)
-            sr = os.stat(file_path)
-            hash_val = hash_file(file_path)
-            writer.writerow([file_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns])
-    csvfile.close()
+        name_dict[info.path] = info
 
 
 def write_file_infos(info_dict, file_name):
     csvfile = open(file_name, 'w', newline='')
     writer = csv.writer(csvfile)
     for info in info_dict.values():
-        writer.writerow(info)
+        writer.writerow(info.make_csv_row())
     csvfile.close()
+
+
+def dest_path_from_source_path(backup_dir, source_path):
+    drive, path = os.path.splitdrive(source_path)
+    path = path[1:]
+    return os.path.join(backup_dir, path)
 
 
 def copy_mailbox(backup_dir):
@@ -128,7 +149,7 @@ def copy_mailbox(backup_dir):
     if available and len(backup_dir) > 4:
         print('Copying mail data.')
         # look for previous backups from which to make a delta
-        # last two characters of backup_dir shold be day. Replace them with '?'
+        # last two characters of backup_dir should be day. Replace them with '?'
         search_path = backup_dir[:-2] + '??'
         bdirs = glob.glob(search_path)
         full_backup = None
@@ -139,8 +160,8 @@ def copy_mailbox(backup_dir):
                 break
         if full_backup:
             print('Full mail backup found: {}. Generating delta.'.format(full_backup))
-            patch_name = target_name + '.patch'
-            subprocess.call(['xdelta3.exe', '-e', '-s', full_backup, source, patch_name])
+            patch_name = target_name + '.bsdiff.patch'
+            bsdiff4.file_diff(full_backup, source, patch_name)
             stat_result = os.stat(patch_name)
             file_count = 1
             file_size = stat_result.st_size
@@ -192,10 +213,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
     new_files = 0
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
-            drive, path = os.path.splitdrive(dpath)
-            if path[0]=='\\':
-                path = path[1:]
-            dest_dir = os.path.join(backup_dir, path)
+            dest_dir = dest_path_from_source_path(backup_dir, dpath)
             os.makedirs(dest_dir, exist_ok=True)
             if dpath.count('\\') <= 4:
                 print(dpath)
@@ -224,24 +242,20 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
                             info = hash_sources[file_path]
                         else:
                             info = None
-                        if info and (sr.st_size == int(info[2])) and (sr.st_mtime_ns == int(info[3])) and \
-                                (sr.st_ctime_ns == int(info[4])):
-                            hash_val = info[1]
+                        if info and not info.has_stat_changed(sr):
+                            hash_val = info.hash
                         else:
                             print('Hashing {}'.format(file_path))
                             hash_val = hash_file(file_path)
-                            hash_sources[file_path] = [file_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
-                        drive, path = os.path.splitdrive(file_path)
-                        path = path[1:]
-                        dest_path = os.path.join(backup_dir, path)
+                            hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
+                        dest_path = dest_path_from_source_path(backup_dir, file_path)
                         use_copy = True
                         if hash_val in hash_targets:
                             # make link
-                            # print("Link {} to {}".format(dest_path, hash_targets[hash][0]))
                             try:
-                                os.link(hash_targets[hash_val][0], dest_path)
+                                os.link(hash_targets[hash_val].path, dest_path)
                                 use_copy = False
-                            except Exception:
+                            except OSError:
                                 pass
                         if use_copy:
                             # copy new file
@@ -249,17 +263,22 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, check_dest_ha
                             shutil.copy2(file_path, dest_path)
                             sr = os.stat(dest_path)
                             new_bytes += sr.st_size
-                            hash_targets[hash_val] = [dest_path, hash_val, sr.st_size, sr.st_mtime_ns, sr.st_ctime_ns]
+                            hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
                             new_files += 1
                             win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                     else:
                         print('Skipping dehydrated file {}'.format(file_path))
-                except Exception:
+                except OSError:
                     print('Exception handling file {}'.format(file_path))
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
-        shutil.copy2(hash_name, os.path.join(backup_dir, os.path.basename(hash_name)))
+        hash_dest_path = dest_path_from_source_path(backup_dir, hash_name)
+        # it's possible the file was already included in the backup. Don't copy over if so.
+        if not os.path.exists(hash_dest_path):
+            dir_path = os.path.split(hash_dest_path)[0]
+            os.makedirs(dir_path, exist_ok=True)
+            shutil.copy2(hash_name, hash_dest_path)
     return new_files, new_bytes
 
 
@@ -300,14 +319,14 @@ if args.config_file:
                 counts = copy_mailbox(backup_dir)
                 new_files += counts[0]
                 new_bytes += counts[1]
-            except:
+            except OSError:
                 print('Failure copying mail data. File likely open.')
         if copy_c_backup:
             try:
                 counts = copy_c_backup_zip(backup_dir)
                 new_files += counts[0]
                 new_bytes += counts[1]
-            except:
+            except OSError:
                 print('Failure copying backup directory.')
         counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
                            args.check_hashes)
