@@ -6,6 +6,7 @@ import shutil
 import glob
 import win32api
 import win32con
+import win32file
 import sys
 import yaml
 import argparse
@@ -264,6 +265,21 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     return new_files, new_bytes
 
 
+# returns a list of hardlinks for the given path, excluding the original path
+def get_hardlinks(path):
+    drive, no_drive_path = os.path.splitdrive(path)
+    hardlinks = []
+    temp_names = win32file.FindFileNames(path)
+    # the response from win32file.FindFileNames needs some fixup
+    # We need to add the drive letter and remove the trailing NUL
+    for t_name in temp_names:
+        fixed_name = t_name[:-1]
+        # don't include the original path
+        if fixed_name != no_drive_path:
+            hardlinks.append(drive + fixed_name)
+    return hardlinks
+
+
 def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
     subdirs = []
     dir_list = os.scandir(dest_dir)
@@ -275,6 +291,25 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
         subdirs = subdirs[:len(subdirs) - max_backup_count]
         hash_dest = {}
         populate_name_dict(hash_dest, dest_hashes_csv, False)
+        for subdir in subdirs:
+            path_prefix = os.path.join(dest_dir, subdir)
+            print('Removing directory: {}', path_prefix)
+            deletions = []
+            additions = []
+            for key, value in hash_dest.items():
+                if key.startswith(path_prefix):
+                    deletions.append(key)
+                    links = get_hardlinks(key)
+                    if links:
+                        value.path = links[-1]
+                        additions.append((value.path, value))
+            for del_path in deletions:
+                hash_dest.pop(del_path)
+            for add_tuple in additions:
+                hash_dest[add_tuple[0]] = add_tuple[1]
+            # write the new hash list before attempting delete, in case of an error
+            write_file_infos(hash_dest, dest_hashes_csv)
+            shutil.rmtree(path_prefix, True)
 
 
 def print_help():
