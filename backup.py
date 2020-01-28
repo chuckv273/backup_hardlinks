@@ -162,6 +162,7 @@ def generate_delta_files(backup_dir, delta_files):
             if full_backup:
                 print('Full backup found: {}. Generating delta.'.format(full_backup))
                 target_name = target_name + '.patch'
+                print('Calling xdelta3 full={}, source={}, target={}'.format(full_backup, source, target_name))
                 subprocess.call(['xdelta3.exe', '-e', '-s', full_backup, source, target_name])
             else:
                 print('Copying mail data.')
@@ -369,6 +370,7 @@ def main():
         with open(args.config_file, 'r') as stream:
             config = yaml.safe_load(stream)
         if 'sources_file' in config:
+            print('Using sources file: {}'.format(config['sources_file']))
             with open(config['sources_file'], 'r') as stream:
                 sources = yaml.safe_load(stream)
                 if 'sources' in sources:
@@ -410,11 +412,21 @@ def main():
             latest_only_dirs = []
             if 'latest_only_dirs' in config:
                 latest_only_dirs = config['latest_only_dirs']
+            print('dest: {}'.format(config['dest']))
+            print('sources: {}'.format(config['sources']))
+            print('dest_hashes: {}'.format(config['dest_hashes']))
+            print('source_hashes: {}'.format(config['source_hashes']))
+            print('use_date: {}'.format(use_date))
+            print('always_hash_source: {}'.format(always_hash_source))
+            print('always_hash_target: {}'.format(always_hash_target))
+            print('latest_only_dirs: {}'.format(latest_only_dirs))
+            print('backup directory: {}'.format(backup_dir))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
             skip_files = []
             if 'delta_files' in config:
+                print('delta_files: {}'.format(config['delta_files']))
                 # since we made a delta of the file, make sure we skip it during the actual backup
                 # it's possible the delta file is included in the traversal of the main backup
                 skip_files.append(config['delta_files'])
