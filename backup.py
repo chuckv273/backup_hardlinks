@@ -125,8 +125,14 @@ def write_file_infos(info_dict, file_name):
 
 def dest_path_from_source_path(backup_dir, source_path):
     drive, path = os.path.splitdrive(source_path)
+    # Trim trailing ':' from drive
+    if len(drive) > 1:
+        drive=drive[:-1]
+    else:
+        drive=''
     path = path[1:]
-    return os.path.join(backup_dir, path)
+    # join ignores empty elements, so it's OK if drive is empty
+    return os.path.join(backup_dir, drive, path)
 
 
 def generate_delta_files(backup_dir, delta_files):
@@ -195,6 +201,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     populate_name_dict(hash_sources, source_hash_csv, True)
     new_bytes = 0
     print('Executing backup')
+    print('Skip files: {}'.format(skip_files))
     new_files = 0
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
@@ -429,7 +436,7 @@ def main():
                 print('delta_files: {}'.format(config['delta_files']))
                 # since we made a delta of the file, make sure we skip it during the actual backup
                 # it's possible the delta file is included in the traversal of the main backup
-                skip_files.append(config['delta_files'])
+                skip_files.extend(config['delta_files'])
                 try:
                     counts = generate_delta_files(backup_dir, config['delta_files'])
                     new_files += counts[0]
