@@ -11,8 +11,6 @@ import sys
 import yaml
 import argparse
 import subprocess
-import journal
-import pywintypes
 
 
 class FileInfo:
@@ -129,9 +127,9 @@ def dest_path_from_source_path(backup_dir, source_path):
     drive, path = os.path.splitdrive(source_path)
     # Trim trailing ':' from drive
     if len(drive) > 1:
-        drive = drive[:-1]
+        drive=drive[:-1]
     else:
-        drive = ''
+        drive=''
     path = path[1:]
     # join ignores empty elements, so it's OK if drive is empty
     return os.path.join(backup_dir, drive, path)
@@ -182,92 +180,8 @@ def generate_delta_files(backup_dir, delta_files):
     return file_count, file_size
 
 
-def get_volumes(path_list):
-    volumes = set()
-    for path in path_list:
-        drive = os.path.splitdrive(path)[0]
-        if drive:
-            volumes.add(drive)
-    return volumes
-
-
-def process_usn(path_list, usn_journal_dir, return_paths):
-    ret_val = []
-    volumes = get_volumes(path_list)
-    for vol in volumes:
-        filename = os.path.join(usn_journal_dir, vol[0]+'.journal')
-        j = journal.Journal(vol)
-        have_start = os.path.exists(filename)
-        if have_start:
-            j.load_state(filename)
-        j.process()
-        j.save_state(filename)
-        if have_start and return_paths:
-            root_dir = vol+os.path.sep
-            for path in j.get_changed_paths():
-                path1 = os.path.join(root_dir, path)
-                # If a file is changed, we have to consider all hardlinked paths as changed
-                # the response from win32file.FindFileNames needs some fix up
-                # We need to add the drive letter and remove the trailing NUL
-                find_file_names_passed = False
-                if os.path.exists(path1):
-                    try:
-                        for temp_name in win32file.FindFileNames(path1):
-                            ret_val.append(vol+temp_name[:-1])
-                        find_file_names_passed = True
-                    except (OSError, pywintypes.error):
-                        pass
-                if not find_file_names_passed:
-                    ret_val.append(path1)
-    return ret_val
-
-
-def get_changed_paths(path_list, usn_journal_dir):
-    return process_usn(path_list, usn_journal_dir, True)
-
-
-def update_usn_journal(path_list, usn_journal_dir):
-    return process_usn(path_list, usn_journal_dir, False)
-
-
-def check_usn_changed_hash_sources(hash_sources, sources, source_usn_journal_dir):
-    if source_usn_journal_dir:
-        # local copy for debugging
-        changed_paths = get_changed_paths(sources, source_usn_journal_dir)
-        for c_path in changed_paths:
-            if c_path in hash_sources:
-                print('USN Path changed: {}'.format(c_path))
-                del hash_sources[c_path]
-
-
-def check_usn_changed_hash_targets(hash_targtets, backup_path, dest_usn_journal_dir):
-    if dest_usn_journal_dir:
-        # translate hash dictionary to name dictionary for path lookup
-        name_dict = {}
-        for item in hash_targtets.values():
-            name_dict[item.path] = item
-        # local copy for debugging
-        changed_paths = get_changed_paths([backup_path], dest_usn_journal_dir)
-        changed = False
-        for c_path in changed_paths:
-            if c_path in name_dict:
-                print('Checking possibly changed target {}'.format(c_path))
-                hash_val = hash_file(c_path)
-                if hash_val == name_dict[c_path].hash:
-                    print('No change for {}'.format(c_path))
-                else:
-                    print('Target file changed: {}'.format(c_path))
-                    changed = True
-                    del name_dict[c_path]
-        if changed:
-            hash_targtets.clear()
-            for item in name_dict.values():
-                hash_targtets[item.hash] = item
-    return
-
-
 def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_dirs, skip_files, always_hash_source,
-              always_hash_target, source_usn_journal_dir, dest_usn_journal_dir):
+              always_hash_target):
     """
     :param backup_dir: str: destination directory for backup
     :param sources: list of source paths. All sub dirs are included
@@ -277,20 +191,14 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     :param skip_files: list of full paths that should be skipped (e.g. already captured via binary delta)
     :param always_hash_source: bool: if true, always hashes source file, withot checking size or timestamps
     :param always_hash_target: bool: if true, rehashes files on dest volume to verify hashes
-    :param source_usn_journal_dir: str: directory to store USN journal files for sources volumes
-    :param dest_usn_journal_dir: str: directory to store USN journal file for dest volume
     :return:
     """
     hash_targets = {}
     hash_sources = {}
     print('Loading dest hashes')
     populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
-    if dest_usn_journal_dir:
-        check_usn_changed_hash_targets(hash_targets, backup_dir, dest_usn_journal_dir)
-    print('Loading source hashes')
+    print('Load source hashes')
     populate_name_dict(hash_sources, source_hash_csv, True)
-    if source_usn_journal_dir:
-        check_usn_changed_hash_sources(hash_sources, sources, source_usn_journal_dir)
     new_bytes = 0
     print('Executing backup')
     print('Skip files: {}'.format(skip_files))
@@ -356,13 +264,12 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
-        hash_dest_path = dest_path_from_source_path(backup_dir, os.path.split(hash_name)[1])
+        hash_dest_path = dest_path_from_source_path(backup_dir, hash_name)
+        # it's possible the file was already included in the backup. Don't copy over if so.
         if not os.path.exists(hash_dest_path):
             dir_path = os.path.split(hash_dest_path)[0]
             os.makedirs(dir_path, exist_ok=True)
             shutil.copy2(hash_name, hash_dest_path)
-    # We just wrote files to the backup volume. Update the journal state to ignore our writes.
-    update_usn_journal([backup_dir], dest_usn_journal_dir)
     return new_files, new_bytes
 
 
@@ -454,9 +361,6 @@ def print_help():
           'subdirectories under the "dest:" directory) exceeds this number the oldest directories are removed. Any hash'
           ' targets in the directories to be removed are repointed to existing hardlinks or removed from the list if no'
           ' other hardlinks exist.')
-    print('usn_journal_dir: Optional. String. If set, the drive\'s USN journal is used to detect changes in the'
-          ' source and dest paths. This is a directory because this will normally include multiple volumes. Files are'
-          ' stored here to indicate last referenced journal values')
 
 
 def main():
@@ -515,12 +419,6 @@ def main():
             latest_only_dirs = []
             if 'latest_only_dirs' in config:
                 latest_only_dirs = config['latest_only_dirs']
-            source_usn_journal_dir = None
-            dest_usn_journal_dir = None
-            if 'source_usn_journal_dir' in config:
-                source_usn_journal_dir = config['source_usn_journal_dir']
-            if 'dest_usn_journal_dir' in config:
-                dest_usn_journal_dir = config['dest_usn_journal_dir']
             print('dest: {}'.format(config['dest']))
             print('sources: {}'.format(config['sources']))
             print('dest_hashes: {}'.format(config['dest_hashes']))
@@ -530,8 +428,6 @@ def main():
             print('always_hash_target: {}'.format(always_hash_target))
             print('latest_only_dirs: {}'.format(latest_only_dirs))
             print('backup directory: {}'.format(backup_dir))
-            print('source_usn_journal_dir: {}'.format(source_usn_journal_dir))
-            print('dest_usn_journal_dir: {}'.format(dest_usn_journal_dir))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
@@ -548,8 +444,7 @@ def main():
                 except OSError as error:
                     print('Failure generating delta files. {}'.format(str(error)))
             counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
-                               latest_only_dirs, skip_files, always_hash_source, always_hash_target,
-                               source_usn_journal_dir, dest_usn_journal_dir)
+                               latest_only_dirs, skip_files, always_hash_source, always_hash_target)
             if 'max_backup_count' in config:
                 delete_excess(config['dest'], config['dest_hashes'], config['max_backup_count'])
             new_files += counts[0]
