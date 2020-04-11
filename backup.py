@@ -11,6 +11,7 @@ import sys
 import yaml
 import argparse
 import subprocess
+import time
 
 
 class FileInfo:
@@ -40,6 +41,10 @@ class FileInfo:
                 self.ctime_ns != stat_info.st_ctime_ns)
 
 
+def log_msg(*args):
+    print(time.strftime('%H:%M:%S '), *args)
+
+
 def hash_file(file_path):
     """ return hash of given file"""
     alg = hashlib.sha1()
@@ -62,10 +67,14 @@ def check_file_info(file_infos, always_check_hash):
             if stat_changed or always_check_hash:
                 hash_val = hash_file(file_infos[i].path)
                 if stat_changed or (hash_val != file_infos[i].hash_val):
-                    print('Mismatch file info: {}'.format(file_infos[i].path))
+                    if hash_val != file_infos[i].hash_val:
+                        log_msg('Hash changed: {}'.format(file_infos[i].path))
+                    else:
+                        log_msg('Mismatch file info: {}'.format(file_infos[i].path))
                     removals.append(i)
                     additions.append(FileInfo(file_infos[i].path, hash_val, sr))
         except OSError:
+            log_msg('File deleted: {}'.format(file_infos[i].path))
             removals.append(i)
     removals.reverse()
     for i in removals:
@@ -95,7 +104,7 @@ def populate_file_infos(file_infos, file_name):
             file_infos.append(FileInfo(csv_row=row))
         csvfile.close()
     except OSError as error:
-        print('Error reading csv: {}, {}', format(file_name, str(error)))
+        log_msg('Error reading csv: {}, {}', format(file_name, str(error)))
 
 
 def populate_hash_dict(hash_dict, file_name, check_hashes):
@@ -146,7 +155,7 @@ def generate_delta_files(backup_dir, delta_files):
             test_file.close()
             available = True
         except OSError:
-            print('File {} is not available. Skipping.'.format(source))
+            log_msg('File {} is not available. Skipping.'.format(source))
             available = False
 
         if available and len(backup_dir) > 4:
@@ -166,12 +175,12 @@ def generate_delta_files(backup_dir, delta_files):
                         full_backup = check_path
                         break
             if full_backup:
-                print('Full backup found: {}. Generating delta.'.format(full_backup))
+                log_msg('Full backup found: {}. Generating delta.'.format(full_backup))
                 target_name = target_name + '.patch'
-                print('Calling xdelta3 full={}, source={}, target={}'.format(full_backup, source, target_name))
+                log_msg('Calling xdelta3 full={}, source={}, target={}'.format(full_backup, source, target_name))
                 subprocess.call(['xdelta3.exe', '-e', '-s', full_backup, source, target_name])
             else:
-                print('Copying mail data.')
+                log_msg('Copying mail data.')
                 shutil.copy2(source, target_name)
             stat_result = os.stat(target_name)
             file_count += 1
@@ -195,20 +204,21 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     """
     hash_targets = {}
     hash_sources = {}
-    print('Loading dest hashes')
+    log_msg('Loading dest hashes')
     populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
-    print('Load source hashes')
-    populate_name_dict(hash_sources, source_hash_csv, True)
+    log_msg('Load source hashes')
+    populate_name_dict(hash_sources, source_hash_csv, always_hash_source)
     new_bytes = 0
-    print('Executing backup')
-    print('Skip files: {}'.format(skip_files))
+    log_msg('Executing backup')
+    log_msg('Skip files: {}'.format(skip_files))
     new_files = 0
+    linked_files = 0
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
             dest_dir = dest_path_from_source_path(backup_dir, dpath)
             os.makedirs(dest_dir, exist_ok=True)
             if dpath.count('\\') <= 4:
-                print(dpath)
+                log_msg('{}, total links: {}'.format(dpath, linked_files))
             if dpath in latest_only_dirs:
                 lastest_time = 0
                 file_selected = []
@@ -236,7 +246,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                             if info and not info.has_stat_changed(sr):
                                 hash_val = info.hash_val
                             else:
-                                print('Hashing {}'.format(file_path))
+                                log_msg('Hashing {}'.format(file_path))
                                 hash_val = hash_file(file_path)
                                 hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
                             dest_path = dest_path_from_source_path(backup_dir, file_path)
@@ -245,12 +255,13 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                                 # make link
                                 try:
                                     os.link(hash_targets[hash_val].path, dest_path)
+                                    linked_files += 1
                                     use_copy = False
                                 except OSError:
                                     pass
                             if use_copy:
                                 # copy new file
-                                print('new file {}'.format(file_path))
+                                log_msg('new file {}'.format(file_path))
                                 shutil.copy2(file_path, dest_path)
                                 sr = os.stat(dest_path)
                                 new_bytes += sr.st_size
@@ -258,9 +269,9 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                                 new_files += 1
                                 win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                         else:
-                            print('Skipping dehydrated file {}'.format(file_path))
+                            log_msg('Skipping dehydrated file {}'.format(file_path))
                 except OSError as error:
-                    print('Exception handling file {}, {}'.format(file_name, str(error)))
+                    log_msg('Exception handling file {}, {}'.format(file_name, str(error)))
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
@@ -270,6 +281,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
             dir_path = os.path.split(hash_dest_path)[0]
             os.makedirs(dir_path, exist_ok=True)
             shutil.copy2(hash_name, hash_dest_path)
+    log_msg('Total links: {:,}'.format(linked_files))
     return new_files, new_bytes
 
 
@@ -301,7 +313,7 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
         populate_name_dict(hash_dest, dest_hashes_csv, False)
         for subdir in subdirs:
             path_prefix = os.path.join(dest_dir, subdir)
-            print('Removing directory: {}', path_prefix)
+            log_msg('Removing directory: {}', path_prefix)
             deletions = []
             additions = []
             for key, value in hash_dest.items():
@@ -428,12 +440,16 @@ def main():
             print('always_hash_target: {}'.format(always_hash_target))
             print('latest_only_dirs: {}'.format(latest_only_dirs))
             print('backup directory: {}'.format(backup_dir))
+            if 'max_backup_count' in config:
+                print('max_backup_count: {}'.format(config['max_backup_count']))
+            else:
+                print('max_backup_count: not set')
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
             skip_files = []
             if 'delta_files' in config:
-                print('delta_files: {}'.format(config['delta_files']))
+                log_msg('delta_files: {}'.format(config['delta_files']))
                 # since we made a delta of the file, make sure we skip it during the actual backup
                 # it's possible the delta file is included in the traversal of the main backup
                 skip_files.extend(config['delta_files'])
@@ -442,14 +458,14 @@ def main():
                     new_files += counts[0]
                     new_bytes += counts[1]
                 except OSError as error:
-                    print('Failure generating delta files. {}'.format(str(error)))
+                    log_msg('Failure generating delta files. {}'.format(str(error)))
             counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
                                latest_only_dirs, skip_files, always_hash_source, always_hash_target)
             if 'max_backup_count' in config:
                 delete_excess(config['dest'], config['dest_hashes'], config['max_backup_count'])
             new_files += counts[0]
             new_bytes += counts[1]
-            print('New files: {:,}\nbytes: {:,}'.format(new_files, new_bytes))
+            log_msg('New files: {:,}\nbytes: {:,}'.format(new_files, new_bytes))
         else:
             print('Config file missing required values. No backup.')
     else:
