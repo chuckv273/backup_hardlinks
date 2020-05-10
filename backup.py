@@ -213,6 +213,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     log_msg('Skip files: {}'.format(skip_files))
     new_files = 0
     linked_files = 0
+    linked_size = 0
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
             dest_dir = dest_path_from_source_path(backup_dir, dpath)
@@ -256,6 +257,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                                 try:
                                     os.link(hash_targets[hash_val].path, dest_path)
                                     linked_files += 1
+                                    linked_size += sr.st_size
                                     use_copy = False
                                 except OSError:
                                     pass
@@ -281,7 +283,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
             dir_path = os.path.split(hash_dest_path)[0]
             os.makedirs(dir_path, exist_ok=True)
             shutil.copy2(hash_name, hash_dest_path)
-    log_msg('Total links: {:,}'.format(linked_files))
+    log_msg('Total links: {:,}, linked size: {:,}'.format(linked_files, linked_size))
     return new_files, new_bytes
 
 
@@ -465,7 +467,7 @@ def main():
                 delete_excess(config['dest'], config['dest_hashes'], config['max_backup_count'])
             new_files += counts[0]
             new_bytes += counts[1]
-            log_msg('New files: {:,}\nbytes: {:,}'.format(new_files, new_bytes))
+            log_msg('New files: {:,}, bytes: {:,}'.format(new_files, new_bytes))
         else:
             print('Config file missing required values. No backup.')
     else:
