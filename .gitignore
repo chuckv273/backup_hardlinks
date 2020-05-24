@@ -4,3 +4,4 @@ dest-hash.csv
 source-hash.csv
 test.yaml
 *.yaml
+test.py
