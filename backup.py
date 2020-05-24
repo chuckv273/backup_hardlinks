@@ -302,6 +302,24 @@ def get_hardlinks(path):
     return hardlinks
 
 
+def remove_tree(path):
+    for (dpath, dnames, fnames) in os.walk(path):
+        for file_name in fnames:
+            file_path = os.path.join(dpath, file_name)
+            hard_links = get_hardlinks(file_path)
+            try:
+                win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
+                os.remove(file_path)
+            except OSError as error:
+                log_msg('Exception removing file {}, {}'.format(file_name, str(error)))
+            if len(hard_links) > 0:
+                win32api.SetFileAttributes(hard_links[0], win32con.FILE_ATTRIBUTE_READONLY)
+    try:
+        shutil.rmtree(path, True)
+    except OSError as error:
+        log_msg('Exception removing tree {}, {}'.format(path, str(error)))
+
+
 def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
     subdirs = []
     dir_list = os.scandir(dest_dir)
@@ -323,15 +341,18 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
                     deletions.append(key)
                     links = get_hardlinks(key)
                     if links:
-                        value.path = links[-1]
-                        additions.append((value.path, value))
+                        for link in links:
+                            if not link.startswith(path_prefix):
+                                value.path = link
+                                additions.append((value.path, value))
+                                break;
             for del_path in deletions:
                 hash_dest.pop(del_path)
             for add_tuple in additions:
                 hash_dest[add_tuple[0]] = add_tuple[1]
             # write the new hash list before attempting delete, in case of an error
             write_file_infos(hash_dest, dest_hashes_csv)
-            shutil.rmtree(path_prefix, True)
+            remove_tree(path_prefix)
 
 
 def print_help():
