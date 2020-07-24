@@ -136,9 +136,9 @@ def dest_path_from_source_path(backup_dir, source_path):
     drive, path = os.path.splitdrive(source_path)
     # Trim trailing ':' from drive
     if len(drive) > 1:
-        drive=drive[:-1]
+        drive = drive[:-1]
     else:
-        drive=''
+        drive = ''
     path = path[1:]
     # join ignores empty elements, so it's OK if drive is empty
     return os.path.join(backup_dir, drive, path)
@@ -178,7 +178,8 @@ def generate_delta_files(backup_dir, delta_files):
                 log_msg('Full backup found: {}. Generating delta.'.format(full_backup))
                 target_name = target_name + '.patch'
                 log_msg('Calling xdelta3 full={}, source={}, target={}'.format(full_backup, source, target_name))
-                subprocess.call(['xdelta3.exe', '-e', '-s', full_backup, source, target_name])
+                subprocess.call(['xdelta3.exe', '-e', '-B', '1000000000', '-W', '16777216', '-s', full_backup, source,
+                                 target_name])
             else:
                 log_msg('Copying mail data.')
                 shutil.copy2(source, target_name)
@@ -204,9 +205,9 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     """
     hash_targets = {}
     hash_sources = {}
-    log_msg('Loading dest hashes')
+    log_msg('Loading dest hashes. Always hash target: {}'.format(always_hash_target))
     populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
-    log_msg('Load source hashes')
+    log_msg('Load source hashes. Always hash source: {}'.format(always_hash_source))
     populate_name_dict(hash_sources, source_hash_csv, always_hash_source)
     new_bytes = 0
     log_msg('Executing backup')
@@ -283,7 +284,8 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
             dir_path = os.path.split(hash_dest_path)[0]
             os.makedirs(dir_path, exist_ok=True)
             shutil.copy2(hash_name, hash_dest_path)
-    log_msg('Total links: {:,}, linked size: {:,}'.format(linked_files, linked_size))
+    log_msg('Link count: {:,}, linked size: {:,}'.format(linked_files, linked_size))
+    log_msg('Total files: {:,}, total size: {:,}'.format(linked_files+new_files, linked_size+new_bytes))
     return new_files, new_bytes
 
 
@@ -341,11 +343,11 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
                     deletions.append(key)
                     links = get_hardlinks(key)
                     if links:
-                        for link in links:
+                        for link in reversed(links):
                             if not link.startswith(path_prefix):
                                 value.path = link
                                 additions.append((value.path, value))
-                                break;
+                                break
             for del_path in deletions:
                 hash_dest.pop(del_path)
             for add_tuple in additions:
@@ -393,9 +395,10 @@ def print_help():
     print('latest_only_dirs: Optional. If any of these directories are traversed, only the single latest file is '
           'included. All other files are skipped. Useful for log or backup directories for other software.')
     print('max_backup_count: Optional. Numeric. If set, when the backup count (as counted by the number of '
-          'subdirectories under the "dest:" directory) exceeds this number the oldest directories are removed. Any hash'
-          ' targets in the directories to be removed are repointed to existing hardlinks or removed from the list if no'
-          ' other hardlinks exist.')
+          'subdirectories under the "dest:" directory) exceeds this number the oldest directories are removed. This '
+          'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any '
+          'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list '
+          'if no other hardlinks exist.')
 
 
 def main():
