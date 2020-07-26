@@ -328,6 +328,7 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
     for dir_entry in dir_list:
         if dir_entry.is_dir():
             subdirs.append(dir_entry.name)
+    log_msg('Checking excess. Max count: {}, directory count: {}'.format(max_backup_count, len(subdirs)))
     if len(subdirs) > max_backup_count:
         subdirs.sort()
         subdirs = subdirs[:len(subdirs) - max_backup_count]
