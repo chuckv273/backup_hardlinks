@@ -12,6 +12,9 @@ import yaml
 import argparse
 import subprocess
 import time
+import threading
+import queue
+import typing
 
 
 class FileInfo:
@@ -57,30 +60,61 @@ def hash_file(file_path):
     return alg.hexdigest()
 
 
-def check_file_info(file_infos, always_check_hash):
-    removals = []
-    additions = []
-    for i in range(len(file_infos)):
+def run_threaded(func, args):
+    thread_count = 8
+    threads = []
+    for i in range(thread_count):
+        thread = (threading.Thread(target=func, args=args))
+        threads.append(thread)
+        thread.start()
+    if len(args) > 0 and isinstance(args[0], queue.Queue):
+        while not args[0].empty():
+            log_msg('Run threaded: queue size {}'.format(args[0].qsize()))
+            time.sleep(60)
+    for thread in threads:
+        thread.join()
+
+
+def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo], removal_q: queue.Queue,
+                           addition_q: queue.Queue, always_check_hash: bool):
+    while True:
         try:
-            sr = os.stat(file_infos[i].path)
-            stat_changed = file_infos[i].has_stat_changed(sr)
+            index = work_q.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            sr = os.stat(file_infos[index].path)
+            stat_changed = file_infos[index].has_stat_changed(sr)
             if stat_changed or always_check_hash:
-                hash_val = hash_file(file_infos[i].path)
-                if stat_changed or (hash_val != file_infos[i].hash_val):
-                    if hash_val != file_infos[i].hash_val:
-                        log_msg('Hash changed: {}'.format(file_infos[i].path))
+                hash_val = hash_file(file_infos[index].path)
+                if stat_changed or (hash_val != file_infos[index].hash_val):
+                    if hash_val != file_infos[index].hash_val:
+                        log_msg('Hash changed: {}'.format(file_infos[index].path))
                     else:
-                        log_msg('Mismatch file info: {}'.format(file_infos[i].path))
-                    removals.append(i)
-                    additions.append(FileInfo(file_infos[i].path, hash_val, sr))
+                        log_msg('Mismatch file info: {}'.format(file_infos[index].path))
+                    removal_q.put(index)
+                    addition_q.put(FileInfo(file_infos[index].path, hash_val, sr))
         except OSError:
-            log_msg('File deleted: {}'.format(file_infos[i].path))
-            removals.append(i)
-    removals.reverse()
+            log_msg('File deleted: {}'.format(file_infos[index].path))
+            removal_q.put(index)
+        work_q.task_done()
+
+
+def check_file_info(file_infos, always_check_hash):
+    work_queue = queue.Queue()
+    removal_q = queue.Queue()
+    addition_q = queue.Queue()
+    for i in range(len(file_infos)):
+        work_queue.put(i)
+    run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, addition_q, always_check_hash))
+    removals = []
+    while not removal_q.empty():
+        removals.append(removal_q.get_nowait())
+    removals.sort(reverse = True)
     for i in removals:
         file_infos.pop(i)
-    for v in additions:
-        file_infos.append(v)
+    while not addition_q.empty():
+        file_infos.append(addition_q.get_nowait())
 
 
 def check_file_info_exists(file_infos):
@@ -190,6 +224,75 @@ def generate_delta_files(backup_dir, delta_files):
     return file_count, file_size
 
 
+def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash_source_lock: threading.Lock,
+                  always_hash_source: bool, hash_targets, hash_target_lock: threading.Lock, results_queue: queue.Queue):
+    linked_files = 0
+    linked_size = 0
+    new_bytes = 0
+    new_files = 0
+    while True:
+        try:
+            file_path = source_queue.get_nowait()
+        except queue.Empty:
+            results_queue.put( (linked_files, linked_size, new_bytes, new_files) )
+            return
+        try:
+            attributes = win32api.GetFileAttributes(file_path)
+            # skip dehydrated files
+            # win32con does not define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x400000
+            #  or FILE_ATTRIBUTE_RECALL_ON_OPEN 0x40000
+            if (attributes & win32con.FILE_ATTRIBUTE_OFFLINE) == 0 and \
+                    (attributes & 0x400000) == 0 and \
+                    (attributes & 0x40000) == 0:
+                sr = os.stat(file_path)
+                info = None
+                if not always_hash_source:
+                    with hash_source_lock:
+                        if file_path in hash_sources:
+                            info = hash_sources[file_path]
+                if info and not info.has_stat_changed(sr):
+                    hash_val = info.hash_val
+                else:
+                    log_msg('Hashing {}'.format(file_path))
+                    hash_val = hash_file(file_path)
+                    hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
+                dest_path = dest_path_from_source_path(backup_dir, file_path)
+                use_copy = True
+                target_val = None
+                with hash_target_lock:
+                    if hash_val in hash_targets:
+                        target_val = hash_targets[hash_val]
+                if target_val:
+                    # make link
+                    try:
+                        os.link(target_val.path, dest_path)
+                        linked_files += 1
+                        linked_size += sr.st_size
+                        use_copy = False
+                    except OSError:
+                        pass
+                if use_copy:
+                    # copy new file
+                    log_msg('new file {}'.format(file_path))
+                    shutil.copy2(file_path, dest_path)
+                    win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
+                    sr = os.stat(dest_path)
+                    new_bytes += sr.st_size
+                    new_files += 1
+                    with hash_target_lock:
+                        hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
+            else:
+                log_msg('Skipping dehydrated file {}'.format(file_path))
+
+        except OSError as error:
+            log_msg('Exception handling file {}, {}'.format(file_path, str(error)))
+        source_queue.task_done()
+        total_files = new_files + linked_files
+        if (total_files) % 1000 == 0:
+            log_msg('Thread {}, total files {}'.format(threading.get_ident(), total_files))
+
+
+
 def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_dirs, skip_files, always_hash_source,
               always_hash_target):
     """
@@ -215,12 +318,11 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     new_files = 0
     linked_files = 0
     linked_size = 0
+    source_queue = queue.Queue()
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
             dest_dir = dest_path_from_source_path(backup_dir, dpath)
             os.makedirs(dest_dir, exist_ok=True)
-            if dpath.count('\\') <= 4:
-                log_msg('{}, total links: {}'.format(dpath, linked_files))
             if dpath in latest_only_dirs:
                 lastest_time = 0
                 file_selected = []
@@ -231,50 +333,20 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                         file_selected = [file_name]
                 fnames = file_selected
             for file_name in fnames:
-                try:
-                    file_path = os.path.join(dpath, file_name)
-                    if file_path not in skip_files:
-                        attributes = win32api.GetFileAttributes(file_path)
-                        # skip dehydrated files
-                        # win32con does not define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x400000
-                        #  or FILE_ATTRIBUTE_RECALL_ON_OPEN 0x40000
-                        if (attributes & win32con.FILE_ATTRIBUTE_OFFLINE) == 0 and \
-                                (attributes & 0x400000) == 0 and \
-                                (attributes & 0x40000) == 0:
-                            sr = os.stat(file_path)
-                            info = None
-                            if (not always_hash_source) and file_path in hash_sources:
-                                info = hash_sources[file_path]
-                            if info and not info.has_stat_changed(sr):
-                                hash_val = info.hash_val
-                            else:
-                                log_msg('Hashing {}'.format(file_path))
-                                hash_val = hash_file(file_path)
-                                hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
-                            dest_path = dest_path_from_source_path(backup_dir, file_path)
-                            use_copy = True
-                            if hash_val in hash_targets:
-                                # make link
-                                try:
-                                    os.link(hash_targets[hash_val].path, dest_path)
-                                    linked_files += 1
-                                    linked_size += sr.st_size
-                                    use_copy = False
-                                except OSError:
-                                    pass
-                            if use_copy:
-                                # copy new file
-                                log_msg('new file {}'.format(file_path))
-                                shutil.copy2(file_path, dest_path)
-                                sr = os.stat(dest_path)
-                                new_bytes += sr.st_size
-                                hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
-                                new_files += 1
-                                win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
-                        else:
-                            log_msg('Skipping dehydrated file {}'.format(file_path))
-                except OSError as error:
-                    log_msg('Exception handling file {}, {}'.format(file_name, str(error)))
+                file_path = os.path.join(dpath, file_name)
+                if file_path not in skip_files:
+                    source_queue.put(file_path)
+    source_lock = threading.Lock()
+    target_lock = threading.Lock()
+    results = queue.Queue()
+    run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
+                                 target_lock, results))
+    while not results.empty():
+        lf, ls, ns, nf = results.get_nowait()
+        linked_files += lf
+        linked_size += ls
+        new_bytes += ns
+        new_files += nf
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
