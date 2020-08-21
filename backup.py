@@ -44,8 +44,10 @@ class FileInfo:
                 self.ctime_ns != stat_info.st_ctime_ns)
 
 
+log_lock = threading.Lock()
 def log_msg(*args):
-    print(time.strftime('%H:%M:%S '), *args)
+    with log_lock:
+        print(time.strftime('%H:%M:%S '), threading.get_ident(), ' ', *args)
 
 
 def hash_file(file_path):
@@ -61,16 +63,16 @@ def hash_file(file_path):
 
 
 def run_threaded(func, args):
-    thread_count = 8
+    thread_count = 16
     threads = []
     for i in range(thread_count):
         thread = (threading.Thread(target=func, args=args))
         threads.append(thread)
         thread.start()
     if len(args) > 0 and isinstance(args[0], queue.Queue):
-        while not args[0].empty():
+        while not args[0].empty() and threads[0].is_alive():
             log_msg('Run threaded: queue size {}'.format(args[0].qsize()))
-            time.sleep(60)
+            threads[0].join(300)
     for thread in threads:
         thread.join()
 
@@ -106,6 +108,7 @@ def check_file_info(file_infos, always_check_hash):
     addition_q = queue.Queue()
     for i in range(len(file_infos)):
         work_queue.put(i)
+    log_msg('check_file_info, work size: {}'.format(len(file_infos)))
     run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, addition_q, always_check_hash))
     removals = []
     while not removal_q.empty():
@@ -289,7 +292,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
         source_queue.task_done()
         total_files = new_files + linked_files
         if (total_files) % 1000 == 0:
-            log_msg('Thread {}, total files {}'.format(threading.get_ident(), total_files))
+            log_msg('total files {}'.format(total_files))
 
 
 
@@ -339,6 +342,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     source_lock = threading.Lock()
     target_lock = threading.Lock()
     results = queue.Queue()
+    log_msg('do_backup, work size: {}'.format(source_queue.qsize()))
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
                                  target_lock, results))
     while not results.empty():
