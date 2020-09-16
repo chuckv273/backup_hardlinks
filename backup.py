@@ -54,10 +54,11 @@ def hash_file(file_path):
     """ return hash of given file"""
     alg = hashlib.sha1()
     f = open(file_path, 'rb')
-    buf = f.read(131072)
+    size = 1024 * 1024
+    buf = f.read(size)
     while len(buf) > 0:
         alg.update(buf)
-        buf = f.read(131072)
+        buf = f.read(size)
     f.close()
     return alg.hexdigest()
 
@@ -125,6 +126,7 @@ def check_file_info_exists(file_infos):
     for i in range(len(file_infos)):
         try:
             if not os.path.exists(file_infos[i].path):
+                log_msg('File deleted: {}'.format(file_infos[i].path))
                 removals.append(i)
         except OSError:
             removals.append(i)
@@ -256,7 +258,8 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
                 if info and not info.has_stat_changed(sr):
                     hash_val = info.hash_val
                 else:
-                    log_msg('Hashing {}'.format(file_path))
+                    if not always_hash_source:
+                        log_msg('Hashing {}'.format(file_path))
                     hash_val = hash_file(file_path)
                     hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
                 dest_path = dest_path_from_source_path(backup_dir, file_path)
@@ -385,6 +388,8 @@ def remove_tree(path):
         for file_name in fnames:
             file_path = os.path.join(dpath, file_name)
             hard_links = get_hardlinks(file_path)
+            if len(hard_links) == 0:
+                log_msg('Deleting file: {}'.format(file_path))
             try:
                 win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
                 os.remove(file_path)
@@ -476,6 +481,7 @@ def print_help():
           'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any '
           'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list '
           'if no other hardlinks exist.')
+    print('thread_count')
 
 
 def main():
@@ -534,6 +540,8 @@ def main():
             latest_only_dirs = []
             if 'latest_only_dirs' in config:
                 latest_only_dirs = config['latest_only_dirs']
+#            if 'thread_count' in config:
+#                thread_count = config['thread_count']
             print('dest: {}'.format(config['dest']))
             print('sources: {}'.format(config['sources']))
             print('dest_hashes: {}'.format(config['dest_hashes']))
@@ -547,6 +555,7 @@ def main():
                 print('max_backup_count: {}'.format(config['max_backup_count']))
             else:
                 print('max_backup_count: not set')
+#            print('thread_count: {}'.format(thread_count))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
