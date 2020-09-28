@@ -15,6 +15,7 @@ import time
 import threading
 import queue
 import typing
+import pywintypes
 
 
 class FileInfo:
@@ -47,7 +48,7 @@ class FileInfo:
 log_lock = threading.Lock()
 def log_msg(*args):
     with log_lock:
-        print(time.strftime('%H:%M:%S '), threading.get_ident(), ' ', *args)
+        print(time.strftime('%H:%M:%S '), threading.get_ident(), ' ', *args, flush=True)
 
 
 def hash_file(file_path):
@@ -70,7 +71,9 @@ def run_threaded(func, args):
         thread = (threading.Thread(target=func, args=args))
         threads.append(thread)
         thread.start()
-    if len(args) > 0 and isinstance(args[0], queue.Queue):
+    queue_param = None
+    # Multiple parameters for a tuple
+    if isinstance(args, tuple) and len(args) > 0 and isinstance(args[0], queue.Queue):
         while not args[0].empty() and threads[0].is_alive():
             log_msg('Run threaded: queue size {}'.format(args[0].qsize()))
             threads[0].join(300)
@@ -293,9 +296,6 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
         except OSError as error:
             log_msg('Exception handling file {}, {}'.format(file_path, str(error)))
         source_queue.task_done()
-        total_files = new_files + linked_files
-        if (total_files) % 1000 == 0:
-            log_msg('total files {}'.format(total_files))
 
 
 
@@ -383,20 +383,69 @@ def get_hardlinks(path):
     return hardlinks
 
 
+def remove_tree_worker(delete_queue, root):
+    while True:
+        try:
+            file_path = delete_queue.get_nowait()
+        except queue.Empty:
+            return
+        exterior_path = None
+        paths_to_delete = [file_path]
+        hard_links = get_hardlinks(file_path)
+        for link in hard_links:
+            if link.startswith(root):
+                paths_to_delete.append(link)
+            else:
+                exterior_path = link
+        if not exterior_path:
+            log_msg('Deleting file: {}'.format(file_path))
+        try:
+            win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
+            for path in paths_to_delete:
+                os.remove(path)
+        except OSError as error:
+            log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
+        except pywintypes.error as pyw_error:
+            log_msg('Exception removing file {}, {}'.format(file_path, str(pyw_error)))
+        if len(hard_links) > 0:
+            try:
+                win32api.SetFileAttributes(hard_links[-1], win32con.FILE_ATTRIBUTE_READONLY)
+            except OSError:
+                pass
+            except pywintypes.error:
+                pass
+        delete_queue.task_done()
+
+
+def walk_tree_worker(walk_queue, delete_queue, file_ids, id_lock):
+    while True:
+        try:
+            file_path = walk_queue.get_nowait()
+        except queue.Empty:
+            return
+        s_info = os.stat(file_path)
+        with id_lock:
+            if s_info.st_ino not in file_ids:
+                file_ids.add(s_info.st_ino)
+                delete_queue.put(file_path)
+        walk_queue.task_done()
+
+
 def remove_tree(path):
+    log_msg('Remove tree: {}'.format(path))
+    delete_queue = queue.Queue()
+    file_ids = set()
+    walk_queue = queue.Queue()
+    id_lock = threading.Lock()
+    log_msg('Generating deletion list.')
     for (dpath, dnames, fnames) in os.walk(path):
         for file_name in fnames:
             file_path = os.path.join(dpath, file_name)
-            hard_links = get_hardlinks(file_path)
-            if len(hard_links) == 0:
-                log_msg('Deleting file: {}'.format(file_path))
-            try:
-                win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
-                os.remove(file_path)
-            except OSError as error:
-                log_msg('Exception removing file {}, {}'.format(file_name, str(error)))
-            if len(hard_links) > 0:
-                win32api.SetFileAttributes(hard_links[0], win32con.FILE_ATTRIBUTE_READONLY)
+            walk_queue.put(file_path)
+    log_msg('Walk list size: {}'.format(walk_queue.qsize()))
+    run_threaded(walk_tree_worker, (walk_queue, delete_queue, file_ids, id_lock))
+    log_msg('Delete list size {}'.format(delete_queue.qsize()))
+    run_threaded(remove_tree_worker, (delete_queue, path))
     try:
         shutil.rmtree(path, True)
     except OSError as error:
@@ -417,7 +466,7 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
         populate_name_dict(hash_dest, dest_hashes_csv, False)
         for subdir in subdirs:
             path_prefix = os.path.join(dest_dir, subdir)
-            log_msg('Removing directory: {}', path_prefix)
+            log_msg('Removing directory: {}'.format(path_prefix))
             deletions = []
             additions = []
             for key, value in hash_dest.items():
@@ -490,6 +539,7 @@ def main():
     parser.add_argument('-help', help='Print detailed help information',
                         action='store_true')
     parser.add_argument('-date_override', help='Text to override date string. Used for script testing')
+    parser.add_argument('-no_backup', action='store_true', help='Skip backup, do delete check. Used for testing')
     args = parser.parse_args()
 
     if args.help:
@@ -555,24 +605,27 @@ def main():
                 print('max_backup_count: {}'.format(config['max_backup_count']))
             else:
                 print('max_backup_count: not set')
+            print('no_backup: {}'.format(args.no_backup))
 #            print('thread_count: {}'.format(thread_count))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
             skip_files = []
-            if 'delta_files' in config:
-                log_msg('delta_files: {}'.format(config['delta_files']))
-                # since we made a delta of the file, make sure we skip it during the actual backup
-                # it's possible the delta file is included in the traversal of the main backup
-                skip_files.extend(config['delta_files'])
-                try:
-                    counts = generate_delta_files(backup_dir, config['delta_files'])
-                    new_files += counts[0]
-                    new_bytes += counts[1]
-                except OSError as error:
-                    log_msg('Failure generating delta files. {}'.format(str(error)))
-            counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
-                               latest_only_dirs, skip_files, always_hash_source, always_hash_target)
+            counts = (0, 0)
+            if not args.no_backup:
+                if 'delta_files' in config:
+                    log_msg('delta_files: {}'.format(config['delta_files']))
+                    # since we made a delta of the file, make sure we skip it during the actual backup
+                    # it's possible the delta file is included in the traversal of the main backup
+                    skip_files.extend(config['delta_files'])
+                    try:
+                        counts = generate_delta_files(backup_dir, config['delta_files'])
+                        new_files += counts[0]
+                        new_bytes += counts[1]
+                    except OSError as error:
+                        log_msg('Failure generating delta files. {}'.format(str(error)))
+                counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
+                                   latest_only_dirs, skip_files, always_hash_source, always_hash_target)
             if 'max_backup_count' in config:
                 delete_excess(config['dest'], config['dest_hashes'], config['max_backup_count'])
             new_files += counts[0]
