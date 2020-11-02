@@ -16,6 +16,7 @@ import threading
 import queue
 import typing
 import pywintypes
+import zipfile
 
 
 class FileInfo:
@@ -223,8 +224,35 @@ def generate_delta_files(backup_dir, delta_files):
                 subprocess.call(['xdelta3.exe', '-e', '-B', '1000000000', '-W', '16777216', '-s', full_backup, source,
                                  target_name])
             else:
-                log_msg('Copying mail data.')
+                log_msg('Copying source: {}.'.format(source))
                 shutil.copy2(source, target_name)
+            stat_result = os.stat(target_name)
+            file_count += 1
+            file_size += stat_result.st_size
+            win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
+    return file_count, file_size
+
+
+def generate_compressed_files(backup_dir, source_files):
+    file_size = 0
+    file_count = 0
+    for source in source_files:
+        target_name = dest_path_from_source_path(backup_dir, source + '.zip')
+        # test if we can read the source file. File is possibly open and not available for backup
+        try:
+            test_file = open(source, 'rb')
+            test_file.close()
+            available = True
+        except OSError:
+            log_msg('File {} is not available. Skipping.'.format(source))
+            available = False
+
+        if available:
+            os.makedirs(os.path.split(target_name)[0], exist_ok=True)
+            log_msg('compressing file {}.'.format(source))
+            zip = zipfile.ZipFile(target_name, "w", zipfile.ZIP_DEFLATED)
+            zip.write(source)
+            zip.close()
             stat_result = os.stat(target_name)
             file_count += 1
             file_size += stat_result.st_size
@@ -558,12 +586,17 @@ def main():
                         config['sources'] = sources['sources']
                 if 'delta_files' in sources:
                     if 'delta_files' in config:
-                        config['delta_files'].append(sources['delta_files'])
+                        config['delta_files'].extend(sources['delta_files'])
                     else:
                         config['delta_files'] = sources['delta_files']
+                if 'compressed_files' in sources:
+                    if 'compressed_files' in config:
+                        config['compressed_files'].extend(sources['compressed_files'])
+                    else:
+                        config['compressed_files'] = sources['compressed_files']
                 if 'latest_only_dirs' in sources:
                     if 'latest_only_dirs' in config:
-                        config['latest_only_dirs'].append(sources['latest_only_dirs'])
+                        config['latest_only_dirs'].extend(sources['latest_only_dirs'])
                     else:
                         config['latest_only_dirs'] = sources['latest_only_dirs']
         if 'dest' in config and 'sources' in config and 'dest_hashes' in config and 'source_hashes' in config:
@@ -624,6 +657,17 @@ def main():
                         new_bytes += counts[1]
                     except OSError as error:
                         log_msg('Failure generating delta files. {}'.format(str(error)))
+                if 'compressed_files' in config:
+                    log_msg('compressed_files: {}'.format(config['compressed_files']))
+                    # since we made a zip of the file, make sure we skip it during the actual backup
+                    # it's possible the zip file is included in the traversal of the main backup
+                    skip_files.extend(config['compressed_files'])
+                    try:
+                        counts = generate_compressed_files(backup_dir, config['compressed_files'])
+                        new_files += counts[0]
+                        new_bytes += counts[1]
+                    except OSError as error:
+                        log_msg('Failure generating compressed files. {}'.format(str(error)))
                 counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
                                    latest_only_dirs, skip_files, always_hash_source, always_hash_target)
             if 'max_backup_count' in config:
