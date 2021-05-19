@@ -56,7 +56,7 @@ def hash_file(file_path):
     """ return hash of given file"""
     alg = hashlib.sha1()
     f = open(file_path, 'rb')
-    size = 1024 * 1024
+    size = 16 * 1024 * 1024
     buf = f.read(size)
     while len(buf) > 0:
         alg.update(buf)

@@ -5,3 +5,4 @@ source-hash.csv
 test.yaml
 *.yaml
 test.py
+__pycache__
