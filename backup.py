@@ -261,7 +261,7 @@ def generate_compressed_files(backup_dir, source_files):
 
 
 def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash_source_lock: threading.Lock,
-                  always_hash_source: bool, hash_targets, hash_target_lock: threading.Lock, results_queue: queue.Queue):
+                  always_hash_source: bool, hash_targets, hash_target_lock: threading.Lock, per_hash_locks, results_queue: queue.Queue):
     linked_files = 0
     linked_size = 0
     new_bytes = 0
@@ -296,6 +296,18 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
                 dest_path = dest_path_from_source_path(backup_dir, file_path)
                 use_copy = True
                 target_val = None
+                hash_lock = None
+                # It's possible for two threads to be working on files with the same hash.
+				# This is undesirable because we will miss hard linking opportunities. 
+				# Create a lock per unique hash so only one thread can be copying/linking a hash at any one time.
+                with hash_target_lock:
+                    if hash_val in per_hash_locks:
+                        hash_lock = per_hash_locks[hash_val]
+                    else:
+                        hash_lock = threading.Lock()
+                        per_hash_locks[hash_val] = hash_lock
+                if hash_lock:
+                    hash_lock.acquire()
                 with hash_target_lock:
                     if hash_val in hash_targets:
                         target_val = hash_targets[hash_val]
@@ -318,6 +330,8 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
                     new_files += 1
                     with hash_target_lock:
                         hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
+                if hash_lock:
+                    hash_lock.release()
             else:
                 log_msg('Skipping dehydrated file {}'.format(file_path))
 
@@ -373,9 +387,10 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     source_lock = threading.Lock()
     target_lock = threading.Lock()
     results = queue.Queue()
+    per_hash_locks = {}
     log_msg('do_backup, work size: {}'.format(source_queue.qsize()))
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
-                                 target_lock, results))
+                                 target_lock, per_hash_locks, results))
     while not results.empty():
         lf, ls, ns, nf = results.get_nowait()
         linked_files += lf
