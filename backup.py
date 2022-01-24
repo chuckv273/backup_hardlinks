@@ -17,6 +17,7 @@ import queue
 import typing
 import pywintypes
 import zipfile
+import random
 
 
 class FileInfo:
@@ -350,7 +351,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     :param source_hash_csv: csv file with hashes on source volume
     :param latest_only_dirs: list of directories from which only the single latest file is saved
     :param skip_files: list of full paths that should be skipped (e.g. already captured via binary delta)
-    :param always_hash_source: bool: if true, always hashes source file, withot checking size or timestamps
+    :param always_hash_source: bool: if true, always hashes source file, without checking size or timestamps
     :param always_hash_target: bool: if true, rehashes files on dest volume to verify hashes
     :return:
     """
@@ -359,7 +360,7 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     log_msg('Loading dest hashes. Always hash target: {}'.format(always_hash_target))
     populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
     log_msg('Load source hashes. Always hash source: {}'.format(always_hash_source))
-    populate_name_dict(hash_sources, source_hash_csv, always_hash_source)
+    populate_name_dict(hash_sources, source_hash_csv, check_existence=True)
     new_bytes = 0
     log_msg('Executing backup')
     log_msg('Skip files: {}'.format(skip_files))
@@ -450,9 +451,9 @@ def remove_tree_worker(delete_queue, root):
             log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
         except pywintypes.error as pyw_error:
             log_msg('Exception removing file {}, {}'.format(file_path, str(pyw_error)))
-        if len(hard_links) > 0:
+        if exterior_path:
             try:
-                win32api.SetFileAttributes(hard_links[-1], win32con.FILE_ATTRIBUTE_READONLY)
+                win32api.SetFileAttributes(exterior_path, win32con.FILE_ATTRIBUTE_READONLY)
             except OSError:
                 pass
             except pywintypes.error:
@@ -573,10 +574,12 @@ def print_help():
           'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any '
           'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list '
           'if no other hardlinks exist.')
-    print('thread_count')
+    print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true. Useful '
+          'to occasionally check the target files are correct without tracking the last time they were checked.')
 
 
 def main():
+    random.seed()
     parser = argparse.ArgumentParser(description='Backup with hardlinks')
     parser.add_argument('config_file', help='Path to configuration yaml file')
     parser.add_argument('-help', help='Print detailed help information',
@@ -638,8 +641,9 @@ def main():
             latest_only_dirs = []
             if 'latest_only_dirs' in config:
                 latest_only_dirs = config['latest_only_dirs']
-#            if 'thread_count' in config:
-#                thread_count = config['thread_count']
+            hash_dest_random = 0
+            if 'hash_dest_random' in config:
+                hash_dest_random = config['hash_dest_random']
             print('dest: {}'.format(config['dest']))
             print('sources: {}'.format(config['sources']))
             print('dest_hashes: {}'.format(config['dest_hashes']))
@@ -654,7 +658,12 @@ def main():
             else:
                 print('max_backup_count: not set')
             print('no_backup: {}'.format(args.no_backup))
-#            print('thread_count: {}'.format(thread_count))
+            print('hash_dest_random: {}'.format(hash_dest_random))
+            if 'hash_dest_random' in config:
+                rv = random.randint(0,99)
+                if (rv < hash_dest_random):
+                    always_hash_target = True
+                print('hash_dest_random outcome, rv: {}, always_hash_target: {}'.format(rv, always_hash_target))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
@@ -692,6 +701,7 @@ def main():
             log_msg('New files: {:,}, bytes: {:,}'.format(new_files, new_bytes))
         else:
             print('Config file missing required values. No backup.')
+            print_help()
     else:
         print('No config file specified.')
         print_help()
