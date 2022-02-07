@@ -15,13 +15,13 @@ import time
 import threading
 import queue
 import typing
-import pywintypes
 import zipfile
 import random
 
 
 class FileInfo:
-    def __init__(self, path=None, hash_val=None, stat_info=None, csv_row=None):
+    def __init__(self, path: str=None, hash_val: str=None, stat_info: os.stat_result=None,
+                 csv_row: typing.List[str]=None):
         if csv_row:
             self.path = csv_row[0]
             self.hash_val = csv_row[1]
@@ -48,17 +48,19 @@ class FileInfo:
 
 
 log_lock = threading.Lock()
+
+
 def log_msg(*args):
     with log_lock:
         print(time.strftime('%H:%M:%S '), threading.get_ident(), ' ', *args, flush=True)
 
 
-def hash_file(file_path):
+def hash_file(file_path: str) -> str:
     """ return hash of given file"""
     alg = hashlib.sha1()
     f = open(file_path, 'rb')
-    size = 16 * 1024 * 1024
-    buf = f.read(size)
+    size: int = 16 * 1024 * 1024
+    buf: bytes = f.read(size)
     while len(buf) > 0:
         alg.update(buf)
         buf = f.read(size)
@@ -66,14 +68,13 @@ def hash_file(file_path):
     return alg.hexdigest()
 
 
-def run_threaded(func, args):
-    thread_count = 16
-    threads = []
+def run_threaded(func, args) -> None:
+    thread_count: int = 16
+    threads: typing.List[threading.Thread] = []
     for i in range(thread_count):
         thread = (threading.Thread(target=func, args=args))
         threads.append(thread)
         thread.start()
-    queue_param = None
     # Multiple parameters for a tuple
     if isinstance(args, tuple) and len(args) > 0 and isinstance(args[0], queue.Queue):
         while not args[0].empty() and threads[0].is_alive():
@@ -84,17 +85,17 @@ def run_threaded(func, args):
 
 
 def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo], removal_q: queue.Queue,
-                           addition_q: queue.Queue, always_check_hash: bool):
+                           addition_q: queue.Queue, always_check_hash: bool) -> None:
     while True:
         try:
-            index = work_q.get_nowait()
+            index: int = work_q.get_nowait()
         except queue.Empty:
             return
         try:
-            sr = os.stat(file_infos[index].path)
-            stat_changed = file_infos[index].has_stat_changed(sr)
+            sr: os.stat_result = os.stat(file_infos[index].path)
+            stat_changed: bool = file_infos[index].has_stat_changed(sr)
             if stat_changed or always_check_hash:
-                hash_val = hash_file(file_infos[index].path)
+                hash_val: str = hash_file(file_infos[index].path)
                 if stat_changed or (hash_val != file_infos[index].hash_val):
                     if hash_val != file_infos[index].hash_val:
                         log_msg('Hash changed: {}'.format(file_infos[index].path))
@@ -108,26 +109,26 @@ def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo
         work_q.task_done()
 
 
-def check_file_info(file_infos, always_check_hash):
-    work_queue = queue.Queue()
-    removal_q = queue.Queue()
-    addition_q = queue.Queue()
+def check_file_info(file_infos: typing.List[FileInfo], always_check_hash: bool) -> None:
+    work_queue: queue.Queue = queue.Queue()
+    removal_q: queue.Queue = queue.Queue()
+    addition_q: queue.Queue = queue.Queue()
     for i in range(len(file_infos)):
         work_queue.put(i)
     log_msg('check_file_info, work size: {}'.format(len(file_infos)))
     run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, addition_q, always_check_hash))
-    removals = []
+    removals: typing.List[int] = []
     while not removal_q.empty():
         removals.append(removal_q.get_nowait())
-    removals.sort(reverse = True)
+    removals.sort(reverse=True)
     for i in removals:
         file_infos.pop(i)
     while not addition_q.empty():
         file_infos.append(addition_q.get_nowait())
 
 
-def check_file_info_exists(file_infos):
-    removals = []
+def check_file_info_exists(file_infos: typing.List[FileInfo]) -> None:
+    removals: typing.List[int] = []
     for i in range(len(file_infos)):
         try:
             if not os.path.exists(file_infos[i].path):
@@ -140,7 +141,7 @@ def check_file_info_exists(file_infos):
         file_infos.pop(i)
 
 
-def populate_file_infos(file_infos, file_name):
+def populate_file_infos(file_infos: typing.List[FileInfo], file_name: str) -> None:
     try:
         csvfile = open(file_name, 'r', newline='')
         reader = csv.reader(csvfile)
@@ -151,16 +152,16 @@ def populate_file_infos(file_infos, file_name):
         log_msg('Error reading csv: {}, {}', format(file_name, str(error)))
 
 
-def populate_hash_dict(hash_dict, file_name, check_hashes):
-    file_infos = []
+def populate_hash_dict(hash_dict: typing.Dict[str, FileInfo], file_name: str, check_hashes: bool) -> None:
+    file_infos: typing.List[FileInfo] = []
     populate_file_infos(file_infos, file_name)
     check_file_info(file_infos, check_hashes)
     for info in file_infos:
         hash_dict[info.hash_val] = info
 
 
-def populate_name_dict(name_dict, file_name, check_existence):
-    file_infos = []
+def populate_name_dict(name_dict: typing.Dict[str, FileInfo], file_name: str, check_existence: bool) -> None:
+    file_infos: typing.List[FileInfo] = []
     populate_file_infos(file_infos, file_name)
     if check_existence:
         check_file_info_exists(file_infos)
@@ -168,7 +169,7 @@ def populate_name_dict(name_dict, file_name, check_existence):
         name_dict[info.path] = info
 
 
-def write_file_infos(info_dict, file_name):
+def write_file_infos(info_dict: typing.Dict[str, FileInfo], file_name: str) -> None:
     csvfile = open(file_name, 'w', newline='')
     writer = csv.writer(csvfile)
     for info in info_dict.values():
@@ -176,7 +177,7 @@ def write_file_infos(info_dict, file_name):
     csvfile.close()
 
 
-def dest_path_from_source_path(backup_dir, source_path):
+def dest_path_from_source_path(backup_dir: str, source_path: str) -> str:
     drive, path = os.path.splitdrive(source_path)
     # Trim trailing ':' from drive
     if len(drive) > 1:
@@ -188,11 +189,11 @@ def dest_path_from_source_path(backup_dir, source_path):
     return os.path.join(backup_dir, drive, path)
 
 
-def generate_delta_files(backup_dir, delta_files):
-    file_size = 0
-    file_count = 0
+def generate_delta_files(backup_dir: str, delta_files: typing.List[str]) -> (int, int):
+    file_size: int = 0
+    file_count: int = 0
     for source in delta_files:
-        target_name = dest_path_from_source_path(backup_dir, source)
+        target_name: str = dest_path_from_source_path(backup_dir, source)
         # test if we can read the source file. File is possibly open and not available for backup
         try:
             test_file = open(source, 'rb')
@@ -206,15 +207,15 @@ def generate_delta_files(backup_dir, delta_files):
             os.makedirs(os.path.split(target_name)[0], exist_ok=True)
             # look for previous backups from which to make a delta
             # last two characters of backup_dir should be day. Replace them with '?'
-            search_path = backup_dir[:-2] + '??'
-            bdirs = glob.glob(search_path)
-            full_backup = None
+            search_path: str = backup_dir[:-2] + '??'
+            bdirs: typing.List[str] = glob.glob(search_path)
+            full_backup: str = None
             for bdir in bdirs:
-                check_path = dest_path_from_source_path(bdir, source)
+                check_path: str = dest_path_from_source_path(bdir, source)
                 if os.path.exists(check_path):
                     # only use non-empty files as a source
                     # this avoids using an empty file as the base if there was an error copying the file
-                    sr = os.stat(check_path)
+                    sr: os.stat_result = os.stat(check_path)
                     if sr.st_size > 0:
                         full_backup = check_path
                         break
@@ -227,18 +228,18 @@ def generate_delta_files(backup_dir, delta_files):
             else:
                 log_msg('Copying source: {}.'.format(source))
                 shutil.copy2(source, target_name)
-            stat_result = os.stat(target_name)
+            stat_result: os.stat_result = os.stat(target_name)
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
     return file_count, file_size
 
 
-def generate_compressed_files(backup_dir, source_files):
-    file_size = 0
-    file_count = 0
+def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -> (int, int):
+    file_size: int = 0
+    file_count: int = 0
     for source in source_files:
-        target_name = dest_path_from_source_path(backup_dir, source + '.zip')
+        target_name: str = dest_path_from_source_path(backup_dir, source + '.zip')
         # test if we can read the source file. File is possibly open and not available for backup
         try:
             test_file = open(source, 'rb')
@@ -251,61 +252,63 @@ def generate_compressed_files(backup_dir, source_files):
         if available:
             os.makedirs(os.path.split(target_name)[0], exist_ok=True)
             log_msg('compressing file {}.'.format(source))
-            zip = zipfile.ZipFile(target_name, "w", zipfile.ZIP_DEFLATED)
-            zip.write(source)
-            zip.close()
-            stat_result = os.stat(target_name)
+            zipf: zipfile.ZipFile = zipfile.ZipFile(target_name, "w", zipfile.ZIP_DEFLATED)
+            zipf.write(source)
+            zipf.close()
+            stat_result: os.stat_result = os.stat(target_name)
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
     return file_count, file_size
 
 
-def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash_source_lock: threading.Lock,
-                  always_hash_source: bool, hash_targets, hash_target_lock: threading.Lock, per_hash_locks, results_queue: queue.Queue):
-    linked_files = 0
-    linked_size = 0
-    new_bytes = 0
-    new_files = 0
+def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typing.Dict[str, FileInfo],
+                  hash_source_lock: threading.Lock, always_hash_source: bool, hash_targets: typing.Dict[str, FileInfo],
+                  hash_target_lock: threading.Lock, per_hash_locks: typing.Dict[str, threading.Lock],
+                  results_queue: queue.Queue) -> None:
+    linked_files: int = 0
+    linked_size: int = 0
+    new_bytes: int = 0
+    new_files: int = 0
     while True:
         try:
-            file_path = source_queue.get_nowait()
+            file_path: str = source_queue.get_nowait()
         except queue.Empty:
-            results_queue.put( (linked_files, linked_size, new_bytes, new_files) )
+            results_queue.put((linked_files, linked_size, new_bytes, new_files))
             return
         try:
-            attributes = win32api.GetFileAttributes(file_path)
+            attributes: int = win32api.GetFileAttributes(file_path)
             # skip dehydrated files
             # win32con does not define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x400000
             #  or FILE_ATTRIBUTE_RECALL_ON_OPEN 0x40000
             if (attributes & win32con.FILE_ATTRIBUTE_OFFLINE) == 0 and \
                     (attributes & 0x400000) == 0 and \
                     (attributes & 0x40000) == 0:
-                sr = os.stat(file_path)
-                info = None
+                sr: os.stat_result = os.stat(file_path)
+                info: FileInfo = None
                 if not always_hash_source:
                     with hash_source_lock:
                         if file_path in hash_sources:
                             info = hash_sources[file_path]
                 if info and not info.has_stat_changed(sr):
-                    hash_val = info.hash_val
+                    hash_val: str = info.hash_val
                 else:
                     if not always_hash_source:
                         log_msg('Hashing {}'.format(file_path))
-                    hash_val = hash_file(file_path)
-                    hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
-                dest_path = dest_path_from_source_path(backup_dir, file_path)
-                use_copy = True
-                target_val = None
-                hash_lock = None
+                    hash_val: str = hash_file(file_path)
+                    with hash_source_lock:
+                        hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
+                dest_path: str = dest_path_from_source_path(backup_dir, file_path)
+                use_copy: bool = True
+                target_val: FileInfo = None
                 # It's possible for two threads to be working on files with the same hash.
-				# This is undesirable because we will miss hard linking opportunities. 
-				# Create a lock per unique hash so only one thread can be copying/linking a hash at any one time.
+                # This is undesirable because we will miss hard linking opportunities.
+                # Create a lock per unique hash so only one thread can be copying/linking a hash at any one time.
                 with hash_target_lock:
                     if hash_val in per_hash_locks:
-                        hash_lock = per_hash_locks[hash_val]
+                        hash_lock: threading.Lock = per_hash_locks[hash_val]
                     else:
-                        hash_lock = threading.Lock()
+                        hash_lock: threading.Lock = threading.Lock()
                         per_hash_locks[hash_val] = hash_lock
                 if hash_lock:
                     hash_lock.acquire()
@@ -326,7 +329,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
                     log_msg('new file {}'.format(file_path))
                     shutil.copy2(file_path, dest_path)
                     win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
-                    sr = os.stat(dest_path)
+                    sr: os.stat_result = os.stat(dest_path)
                     new_bytes += sr.st_size
                     new_files += 1
                     with hash_target_lock:
@@ -341,9 +344,9 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources, hash
         source_queue.task_done()
 
 
-
-def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_dirs, skip_files, always_hash_source,
-              always_hash_target):
+def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, source_hash_csv: str,
+              latest_only_dirs: typing.List[str], skip_files: typing.List[str], always_hash_source: bool,
+              always_hash_target: bool) -> (int, int):
     """
     :param backup_dir: str: destination directory for backup
     :param sources: list of source paths. All sub dirs are included
@@ -355,26 +358,26 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
     :param always_hash_target: bool: if true, rehashes files on dest volume to verify hashes
     :return:
     """
-    hash_targets = {}
-    hash_sources = {}
+    hash_targets: typing.Dict[str, FileInfo] = {}
+    hash_sources: typing.Dict[str, FileInfo] = {}
     log_msg('Loading dest hashes. Always hash target: {}'.format(always_hash_target))
     populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
     log_msg('Load source hashes. Always hash source: {}'.format(always_hash_source))
     populate_name_dict(hash_sources, source_hash_csv, check_existence=True)
-    new_bytes = 0
+    new_bytes: int = 0
     log_msg('Executing backup')
     log_msg('Skip files: {}'.format(skip_files))
-    new_files = 0
-    linked_files = 0
-    linked_size = 0
-    source_queue = queue.Queue()
+    new_files: int = 0
+    linked_files: int = 0
+    linked_size: int = 0
+    source_queue: queue.Queue = queue.Queue()
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
-            dest_dir = dest_path_from_source_path(backup_dir, dpath)
+            dest_dir: str = dest_path_from_source_path(backup_dir, dpath)
             os.makedirs(dest_dir, exist_ok=True)
             if dpath in latest_only_dirs:
-                lastest_time = 0
-                file_selected = []
+                lastest_time: int = 0
+                file_selected: typing.List[str] = []
                 for file_name in fnames:
                     sr = os.stat(os.path.join(dpath, file_name))
                     if sr.st_mtime_ns > lastest_time:
@@ -385,10 +388,10 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
                 file_path = os.path.join(dpath, file_name)
                 if file_path not in skip_files:
                     source_queue.put(file_path)
-    source_lock = threading.Lock()
-    target_lock = threading.Lock()
-    results = queue.Queue()
-    per_hash_locks = {}
+    source_lock: threading.Lock = threading.Lock()
+    target_lock: threading.Lock = threading.Lock()
+    results: queue.Queue = queue.Queue()
+    per_hash_locks: typing.Dict[str, threading.Lock] = {}
     log_msg('do_backup, work size: {}'.format(source_queue.qsize()))
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
                                  target_lock, per_hash_locks, results))
@@ -413,29 +416,29 @@ def do_backup(backup_dir, sources, dest_hash_csv, source_hash_csv, latest_only_d
 
 
 # returns a list of hardlinks for the given path, excluding the original path
-def get_hardlinks(path):
+def get_hardlinks(path: str) -> typing.List[str]:
     drive, no_drive_path = os.path.splitdrive(path)
-    hardlinks = []
-    temp_names = win32file.FindFileNames(path)
+    hardlinks: typing.List[str] = []
+    temp_names: typing.List[str] = win32file.FindFileNames(path)
     # the response from win32file.FindFileNames needs some fixup
     # We need to add the drive letter and remove the trailing NUL
     for t_name in temp_names:
-        fixed_name = t_name[:-1]
+        fixed_name: str = t_name[:-1]
         # don't include the original path
         if fixed_name != no_drive_path:
             hardlinks.append(drive + fixed_name)
     return hardlinks
 
 
-def remove_tree_worker(delete_queue, root):
+def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
     while True:
         try:
-            file_path = delete_queue.get_nowait()
+            file_path: str = delete_queue.get_nowait()
         except queue.Empty:
             return
-        exterior_path = None
-        paths_to_delete = [file_path]
-        hard_links = get_hardlinks(file_path)
+        exterior_path: str = None
+        paths_to_delete: typing.List[str] = [file_path]
+        hard_links: typing.List[str] = get_hardlinks(file_path)
         for link in hard_links:
             if link.startswith(root):
                 paths_to_delete.append(link)
@@ -449,25 +452,22 @@ def remove_tree_worker(delete_queue, root):
                 os.remove(path)
         except OSError as error:
             log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
-        except pywintypes.error as pyw_error:
-            log_msg('Exception removing file {}, {}'.format(file_path, str(pyw_error)))
         if exterior_path:
             try:
                 win32api.SetFileAttributes(exterior_path, win32con.FILE_ATTRIBUTE_READONLY)
             except OSError:
                 pass
-            except pywintypes.error:
-                pass
         delete_queue.task_done()
 
 
-def walk_tree_worker(walk_queue, delete_queue, file_ids, id_lock):
+def walk_tree_worker(walk_queue: queue.Queue, delete_queue: queue.Queue, file_ids: set, id_lock: threading.Lock)\
+                    -> None:
     while True:
         try:
-            file_path = walk_queue.get_nowait()
+            file_path: str = walk_queue.get_nowait()
         except queue.Empty:
             return
-        s_info = os.stat(file_path)
+        s_info: os.stat_result = os.stat(file_path)
         with id_lock:
             if s_info.st_ino not in file_ids:
                 file_ids.add(s_info.st_ino)
@@ -475,12 +475,12 @@ def walk_tree_worker(walk_queue, delete_queue, file_ids, id_lock):
         walk_queue.task_done()
 
 
-def remove_tree(path):
+def remove_tree(path: str) -> None:
     log_msg('Remove tree: {}'.format(path))
-    delete_queue = queue.Queue()
-    file_ids = set()
-    walk_queue = queue.Queue()
-    id_lock = threading.Lock()
+    delete_queue: queue.Queue = queue.Queue()
+    file_ids: set = set()
+    walk_queue: queue.Queue = queue.Queue()
+    id_lock: threading.Lock = threading.Lock()
     log_msg('Generating deletion list.')
     for (dpath, dnames, fnames) in os.walk(path):
         for file_name in fnames:
@@ -496,8 +496,8 @@ def remove_tree(path):
         log_msg('Exception removing tree {}, {}'.format(path, str(error)))
 
 
-def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
-    subdirs = []
+def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) -> None:
+    subdirs: typing.List[str] = []
     dir_list = os.scandir(dest_dir)
     for dir_entry in dir_list:
         if dir_entry.is_dir():
@@ -506,13 +506,13 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
     if len(subdirs) > max_backup_count:
         subdirs.sort()
         subdirs = subdirs[:len(subdirs) - max_backup_count]
-        hash_dest = {}
+        hash_dest: typing.Dict[str, FileInfo] = {}
         populate_name_dict(hash_dest, dest_hashes_csv, False)
         for subdir in subdirs:
-            path_prefix = os.path.join(dest_dir, subdir)
+            path_prefix: str = os.path.join(dest_dir, subdir)
             log_msg('Removing directory: {}'.format(path_prefix))
-            deletions = []
-            additions = []
+            deletions: typing.List[str] = []
+            additions: typing.List[(str, FileInfo)] = []
             for key, value in hash_dest.items():
                 if key.startswith(path_prefix):
                     deletions.append(key)
@@ -532,7 +532,7 @@ def delete_excess(dest_dir, dest_hashes_csv, max_backup_count):
             remove_tree(path_prefix)
 
 
-def print_help():
+def print_help() -> None:
     print('backup.py - Backup with hardlinks')
     print('python backup.py config_file [-help]')
     print('This script maintains a catalog of hashes on the backup source and target. When creating a new backup file '
@@ -660,8 +660,8 @@ def main():
             print('no_backup: {}'.format(args.no_backup))
             print('hash_dest_random: {}'.format(hash_dest_random))
             if 'hash_dest_random' in config:
-                rv = random.randint(0,99)
-                if (rv < hash_dest_random):
+                rv = random.randint(0, 99)
+                if rv < hash_dest_random:
                     always_hash_target = True
                 print('hash_dest_random outcome, rv: {}, always_hash_target: {}'.format(rv, always_hash_target))
             os.makedirs(backup_dir, exist_ok=True)
