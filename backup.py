@@ -78,7 +78,7 @@ def run_threaded(func, args) -> None:
     # Multiple parameters for a tuple
     if isinstance(args, tuple) and len(args) > 0 and isinstance(args[0], queue.Queue):
         while not args[0].empty() and threads[0].is_alive():
-            log_msg('Run threaded: queue size {}'.format(args[0].qsize()))
+            log_msg('Run threaded: queue size {:,}'.format(args[0].qsize()))
             threads[0].join(300)
     for thread in threads:
         thread.join()
@@ -115,7 +115,7 @@ def check_file_info(file_infos: typing.List[FileInfo], always_check_hash: bool) 
     addition_q: queue.Queue = queue.Queue()
     for i in range(len(file_infos)):
         work_queue.put(i)
-    log_msg('check_file_info, work size: {}'.format(len(file_infos)))
+    log_msg('check_file_info, work size: {:,}'.format(len(file_infos)))
     run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, addition_q, always_check_hash))
     removals: typing.List[int] = []
     while not removal_q.empty():
@@ -232,6 +232,7 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str]) -> (int
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
+    log_msg('Delta, new files: {:,}, bytes: {:,}'.format(file_count, file_size))
     return file_count, file_size
 
 
@@ -259,13 +260,14 @@ def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
+    log_msg('Compress, new files: {:,}, bytes: {:,}'.format(file_count, file_size))
     return file_count, file_size
 
 
 def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typing.Dict[str, FileInfo],
                   hash_source_lock: threading.Lock, always_hash_source: bool, hash_targets: typing.Dict[str, FileInfo],
                   hash_target_lock: threading.Lock, per_hash_locks: typing.Dict[str, threading.Lock],
-                  results_queue: queue.Queue) -> None:
+                  results_queue: queue.Queue, latest_only_dirs: typing.List[str]) -> None:
     linked_files: int = 0
     linked_size: int = 0
     new_bytes: int = 0
@@ -316,6 +318,11 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                     if hash_val in hash_targets:
                         target_val = hash_targets[hash_val]
                 if target_val:
+                    # We matched an existing hash. This generally should not occur for files in latest_only_dirs.
+                    # This commonly indicates the source for the file isn't running correctly.
+                    # Output a log message to point this out
+                    if os.path.dirname(file_path) in latest_only_dirs:
+                        log_msg('File {} matches existing hash.'.format(file_path))
                     # make link
                     try:
                         os.link(target_val.path, dest_path)
@@ -326,7 +333,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                         pass
                 if use_copy:
                     # copy new file
-                    log_msg('new file {}'.format(file_path))
+                    log_msg('new file {}, size {:,}'.format(file_path, sr.st_size))
                     shutil.copy2(file_path, dest_path)
                     win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                     sr: os.stat_result = os.stat(dest_path)
@@ -392,9 +399,9 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     target_lock: threading.Lock = threading.Lock()
     results: queue.Queue = queue.Queue()
     per_hash_locks: typing.Dict[str, threading.Lock] = {}
-    log_msg('do_backup, work size: {}'.format(source_queue.qsize()))
+    log_msg('do_backup, work size: {:,}'.format(source_queue.qsize()))
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
-                                 target_lock, per_hash_locks, results))
+                                 target_lock, per_hash_locks, results, latest_only_dirs))
     while not results.empty():
         lf, ls, ns, nf = results.get_nowait()
         linked_files += lf
@@ -411,6 +418,7 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
             os.makedirs(dir_path, exist_ok=True)
             shutil.copy2(hash_name, hash_dest_path)
     log_msg('Link count: {:,}, linked size: {:,}'.format(linked_files, linked_size))
+    log_msg('New files count: {:,}, size: {:,}'.format(new_files, new_bytes))
     log_msg('Total files: {:,}, total size: {:,}'.format(linked_files+new_files, linked_size+new_bytes))
     return new_files, new_bytes
 
@@ -486,9 +494,9 @@ def remove_tree(path: str) -> None:
         for file_name in fnames:
             file_path = os.path.join(dpath, file_name)
             walk_queue.put(file_path)
-    log_msg('Walk list size: {}'.format(walk_queue.qsize()))
+    log_msg('Walk list size: {:,}'.format(walk_queue.qsize()))
     run_threaded(walk_tree_worker, (walk_queue, delete_queue, file_ids, id_lock))
-    log_msg('Delete list size {}'.format(delete_queue.qsize()))
+    log_msg('Delete list size {:,}'.format(delete_queue.qsize()))
     run_threaded(remove_tree_worker, (delete_queue, path))
     try:
         shutil.rmtree(path, True)
