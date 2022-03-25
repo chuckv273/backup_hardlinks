@@ -267,7 +267,7 @@ def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -
 def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typing.Dict[str, FileInfo],
                   hash_source_lock: threading.Lock, always_hash_source: bool, hash_targets: typing.Dict[str, FileInfo],
                   hash_target_lock: threading.Lock, per_hash_locks: typing.Dict[str, threading.Lock],
-                  results_queue: queue.Queue, latest_only_dirs: typing.List[str]) -> None:
+                  results_queue: queue.Queue, latest_only_dirs: typing.List[str], no_hash_files: typing.List[str]) -> None:
     linked_files: int = 0
     linked_size: int = 0
     new_bytes: int = 0
@@ -339,8 +339,11 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                     sr: os.stat_result = os.stat(dest_path)
                     new_bytes += sr.st_size
                     new_files += 1
-                    with hash_target_lock:
-                        hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
+                    if file_path not in no_hash_files:
+                        with hash_target_lock:
+                            hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
+                    else:
+                        log_msg('Not including {} in hash table.'.format(file_path))
                 if hash_lock:
                     hash_lock.release()
             else:
@@ -352,8 +355,8 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
 
 
 def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, source_hash_csv: str,
-              latest_only_dirs: typing.List[str], skip_files: typing.List[str], always_hash_source: bool,
-              always_hash_target: bool) -> (int, int):
+              latest_only_dirs: typing.List[str], skip_files: typing.List[str], no_hash_files: typing.List[str],
+              always_hash_source: bool, always_hash_target: bool) -> (int, int):
     """
     :param backup_dir: str: destination directory for backup
     :param sources: list of source paths. All sub dirs are included
@@ -361,6 +364,7 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     :param source_hash_csv: csv file with hashes on source volume
     :param latest_only_dirs: list of directories from which only the single latest file is saved
     :param skip_files: list of full paths that should be skipped (e.g. already captured via binary delta)
+    :param no_hash_files: list of file paths that when backed up are not included in destination hashes
     :param always_hash_source: bool: if true, always hashes source file, without checking size or timestamps
     :param always_hash_target: bool: if true, rehashes files on dest volume to verify hashes
     :return:
@@ -368,7 +372,8 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     hash_targets: typing.Dict[str, FileInfo] = {}
     hash_sources: typing.Dict[str, FileInfo] = {}
     log_msg('Loading dest hashes. Always hash target: {}'.format(always_hash_target))
-    populate_hash_dict(hash_targets, dest_hash_csv, always_hash_target)
+    # Don't check destination hashes yet. Write backup first, then check destination hashes.
+    populate_hash_dict(hash_targets, dest_hash_csv, False)
     log_msg('Load source hashes. Always hash source: {}'.format(always_hash_source))
     populate_name_dict(hash_sources, source_hash_csv, check_existence=True)
     new_bytes: int = 0
@@ -401,7 +406,7 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     per_hash_locks: typing.Dict[str, threading.Lock] = {}
     log_msg('do_backup, work size: {:,}'.format(source_queue.qsize()))
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
-                                 target_lock, per_hash_locks, results, latest_only_dirs))
+                                 target_lock, per_hash_locks, results, latest_only_dirs, no_hash_files))
     while not results.empty():
         lf, ls, ns, nf = results.get_nowait()
         linked_files += lf
@@ -410,6 +415,11 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
         new_files += nf
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
+    # Move checking destination hashes to after the backup is done.
+    #  This makes writing first, which is more important. If there is an interruption, better to interrupt checking
+    #  rather than writing.
+    if always_hash_target:
+        populate_hash_dict(hash_targets, dest_hash_csv, True)
     for hash_name in [dest_hash_csv, source_hash_csv]:
         hash_dest_path = dest_path_from_source_path(backup_dir, hash_name)
         # it's possible the file was already included in the backup. Don't copy over if so.
@@ -584,6 +594,8 @@ def print_help() -> None:
           'if no other hardlinks exist.')
     print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true. Useful '
           'to occasionally check the target files are correct without tracking the last time they were checked.')
+    print('no_hash_files: Optional. If any of these files are backed up, the hash is not saved in the destination '
+          'hash table. Useful for log files that are changing from the back up itself.')
 
 
 def main():
@@ -652,6 +664,9 @@ def main():
             hash_dest_random = 0
             if 'hash_dest_random' in config:
                 hash_dest_random = config['hash_dest_random']
+            no_hash_files = []
+            if 'no_hash_files' in config:
+                no_hash_files = config['no_hash_files']
             print('dest: {}'.format(config['dest']))
             print('sources: {}'.format(config['sources']))
             print('dest_hashes: {}'.format(config['dest_hashes']))
@@ -672,6 +687,7 @@ def main():
                 if rv < hash_dest_random:
                     always_hash_target = True
                 print('hash_dest_random outcome, rv: {}, always_hash_target: {}'.format(rv, always_hash_target))
+            print('no_hash_files: {}'.format(no_hash_files))
             os.makedirs(backup_dir, exist_ok=True)
             new_files = 0
             new_bytes = 0
@@ -701,7 +717,7 @@ def main():
                     except OSError as error:
                         log_msg('Failure generating compressed files. {}'.format(str(error)))
                 counts = do_backup(backup_dir, config['sources'], config['dest_hashes'], config['source_hashes'],
-                                   latest_only_dirs, skip_files, always_hash_source, always_hash_target)
+                                   latest_only_dirs, skip_files, no_hash_files, always_hash_source, always_hash_target)
             if 'max_backup_count' in config:
                 delete_excess(config['dest'], config['dest_hashes'], config['max_backup_count'])
             new_files += counts[0]
