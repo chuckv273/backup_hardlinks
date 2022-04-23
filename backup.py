@@ -466,10 +466,13 @@ def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
             log_msg('Deleting file: {}'.format(file_path))
         try:
             win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
-            for path in paths_to_delete:
-                os.remove(path)
+            try:
+                for path in paths_to_delete:
+                    os.remove(path)
+            except OSError as error:
+                log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
         except OSError as error:
-            log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
+            log_msg('Exception removing read-only attribute {}, {}'.format(file_path, str(error)))
         if exterior_path:
             try:
                 win32api.SetFileAttributes(exterior_path, win32con.FILE_ATTRIBUTE_READONLY)
@@ -553,48 +556,48 @@ def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) ->
 def print_help() -> None:
     print('backup.py - Backup with hardlinks')
     print('python backup.py config_file [-help]')
-    print('This script maintains a catalog of hashes on the backup source and target. When creating a new backup file '
-          'this allows us to hardlink the new files rather than copying a new set of bits. The first backup set '
-          'consumes the full size, but later sets only use space for new or changed content. Unchanged files only '
+    print('This script maintains a catalog of hashes on the backup source and target. When creating a new backup file\n'
+          'this allows us to hardlink the new files rather than copying a new set of bits. The first backup set\n'
+          'consumes the full size, but later sets only use space for new or changed content. Unchanged files only\n'
           'require a hardlink\n')
-    print('Options are stored in a yaml config file. All path comparisons are case sensitive. You must write any path '
-          'exactly as the OS presents it.')
-    print('sources: Required. A yaml string list of source directories. Each directory is fully traversed during the '
+    print('Options are stored in a yaml config file. All path comparisons are case sensitive. You must write any path\n'
+          'exactly as the OS presents it.\n')
+    print('sources: Required. A yaml string list of source directories. Each directory is fully traversed during the\n'
           'backup.')
-    print('dest: Required. The path to the backup destination. Backups become subdirectories as YYYY-MM-DD. ')
-    print('source_hashes: Required. A csv file to load and store source file info. Each source file has hash, size, and'
-          ' timestamps. Size and timestamps are used to avoid rehashing. Can be non-existent at first, the script will '
-          'generate it as needed. It should never be edited, the script will read and write it as needed.')
-    print('dest_hashes: Required. A csv file to load and store destination file info. Each unique hash in the target '
-          'area is tracked with path, hash, size, and timestamps. When a source file matches a target hash, a hardlink '
-          'is created instead of a full copy. Size and timestamps are used to check for changes at start. Can be '
-          'non-existent at first, the script will generate it as needed. It should never be edited, the script will '
+    print('dest: Required. The path to the backup destination. Backups become subdirectories as YYYY-MM-DD.')
+    print('source_hashes: Required. A csv file to load and store source file info. Each source file has hash, size,\n'
+          'and timestamps. Size and timestamps are used to avoid rehashing. Can be non-existent at first, the script\n'
+          'will generate it as needed. It should never be edited, the script will read and write it as needed.')
+    print('dest_hashes: Required. A csv file to load and store destination file info. Each unique hash in the target\n'
+          'area is tracked with path, hash, size, and timestamps. When a source file matches a target hash, a hardlink\n'
+          'is created instead of a full copy. Size and timestamps are used to check for changes at start. Can be\n'
+          'non-existent at first, the script will generate it as needed. It should never be edited, the script will\n'
           'read and write it as needed.')
-    print('sources_file: Optional. Pull the sources list from a separate yaml file. This will add any entries to '
-          'the local "sources:", "delta_files:", and "latest_only_dirs:". Useful when multiple backup sets need the '
+    print('sources_file: Optional. Pull the sources list from a separate yaml file. This will add any entries to\n'
+          'the local "sources:", "delta_files:", and "latest_only_dirs:". Useful when multiple backup sets need the\n'
           'same source list.')
-    print('delta_files: Optional. A yaml string list of files to generate a binary delta of. Very useful for large mail'
-          ' store files. At first, a full copy of the file is made. On subsequent backups, if a full version is found '
-          'in the earlier backups then a binary delta from the earlier full version is stored. Given the YYYY-MM-DD '
-          'format, the routine looks for YYYY-MM-??, basically any full copy within the current month. This option '
-          'requires the utility xdelta3.exe to be on the path. This option is incompatible with "use_date: false"')
-    print('use_date: Optional, default true. true or false. Sets whether a date encoded subdirectory should be created '
+    print('delta_files: Optional. A yaml string list of files to generate a binary delta of. Very useful for large\n'
+          'mail store files. At first, a full copy of the file is made. On subsequent backups, if a full version is\n'
+          'found in the earlier backups then a binary delta from the earlier full version is stored. Given the\n'
+          'YYYY-MM-DD format, the routine looks for YYYY-MM-??, basically any full copy within the current month. This\n'
+          'option requires the utility xdelta3.exe to be on the path. This option is incompatible with "use_date: false"')
+    print('use_date: Optional, default true. true or false. Sets whether a date encoded subdirectory should be created\n'
           'under the dest: directory. Useful if copying a set of already dated archives to a new destination')
-    print('always_hash_source: Optional, default false. If true, source files are hashed every time. If false, size and'
-          ' timestamps are used to determine if a source file has changed.')
-    print('always_hash_target: Optional, default false. If true, at start hash targets in the dest directory are '
-          'rehashed to confirm our current hash information is correct. Only the unique hash targets (not all files) '
+    print('always_hash_source: Optional, default false. If true, source files are hashed every time. If false, size\n'
+          'and timestamps are used to determine if a source file has changed.')
+    print('always_hash_target: Optional, default false. If true, at start hash targets in the dest directory are\n'
+          'rehashed to confirm our current hash information is correct. Only the unique hash targets (not all files)\n'
           'are hashed. If false, size and timestamps are used to determine if a target file has changed.')
-    print('latest_only_dirs: Optional. If any of these directories are traversed, only the single latest file is '
+    print('latest_only_dirs: Optional. If any of these directories are traversed, only the single latest file is\n'
           'included. All other files are skipped. Useful for log or backup directories for other software.')
-    print('max_backup_count: Optional. Numeric. If set, when the backup count (as counted by the number of '
-          'subdirectories under the "dest:" directory) exceeds this number the oldest directories are removed. This '
-          'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any '
-          'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list '
+    print('max_backup_count: Optional. Numeric. If set, when the backup count (as counted by the number of\n'
+          'subdirectories under the "dest:" directory) exceeds this number the oldest directories are removed. This\n'
+          'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any\n'
+          'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list\n'
           'if no other hardlinks exist.')
-    print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true. Useful '
+    print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true. Useful\n'
           'to occasionally check the target files are correct without tracking the last time they were checked.')
-    print('no_hash_files: Optional. If any of these files are backed up, the hash is not saved in the destination '
+    print('no_hash_files: Optional. If any of these files are backed up, the hash is not saved in the destination\n'
           'hash table. Useful for log files that are changing from the back up itself.')
 
 
@@ -602,13 +605,12 @@ def main():
     random.seed()
     parser = argparse.ArgumentParser(description='Backup with hardlinks')
     parser.add_argument('config_file', help='Path to configuration yaml file')
-    parser.add_argument('-help', help='Print detailed help information',
-                        action='store_true')
     parser.add_argument('-date_override', help='Text to override date string. Used for script testing')
     parser.add_argument('-no_backup', action='store_true', help='Skip backup, do delete check. Used for testing')
+    parser.add_argument('-details', action='store_true', help='Print detailed help')
     args = parser.parse_args()
 
-    if args.help:
+    if args.details or not args.config_file or not os.path.exists(args.config_file):
         print_help()
     elif args.config_file:
         with open(args.config_file, 'r') as stream:
