@@ -267,7 +267,8 @@ def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -
 def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typing.Dict[str, FileInfo],
                   hash_source_lock: threading.Lock, always_hash_source: bool, hash_targets: typing.Dict[str, FileInfo],
                   hash_target_lock: threading.Lock, per_hash_locks: typing.Dict[str, threading.Lock],
-                  results_queue: queue.Queue, latest_only_dirs: typing.List[str], no_hash_files: typing.List[str]) -> None:
+                  results_queue: queue.Queue, latest_only_dirs: typing.List[str], no_hash_files: typing.List[str]
+                  ) -> None:
     linked_files: int = 0
     linked_size: int = 0
     new_bytes: int = 0
@@ -349,7 +350,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
             else:
                 log_msg('Skipping dehydrated file {}'.format(file_path))
 
-        except OSError as error:
+        except (OSError, win32api.error) as error:
             log_msg('Exception handling file {}, {}'.format(file_path, str(error)))
         source_queue.task_done()
 
@@ -569,20 +570,21 @@ def print_help() -> None:
           'and timestamps. Size and timestamps are used to avoid rehashing. Can be non-existent at first, the script\n'
           'will generate it as needed. It should never be edited, the script will read and write it as needed.')
     print('dest_hashes: Required. A csv file to load and store destination file info. Each unique hash in the target\n'
-          'area is tracked with path, hash, size, and timestamps. When a source file matches a target hash, a hardlink\n'
-          'is created instead of a full copy. Size and timestamps are used to check for changes at start. Can be\n'
-          'non-existent at first, the script will generate it as needed. It should never be edited, the script will\n'
-          'read and write it as needed.')
+          'area is tracked with path, hash, size, and timestamps. When a source file matches a target hash, a\n'
+          'hardlink is created instead of a full copy. Size and timestamps are used to check for changes at start.\n'
+          ' Can be non-existent at first, the script will generate it as needed. It should never be edited, the\n'
+          'script will read and write it as needed.')
     print('sources_file: Optional. Pull the sources list from a separate yaml file. This will add any entries to\n'
           'the local "sources:", "delta_files:", and "latest_only_dirs:". Useful when multiple backup sets need the\n'
           'same source list.')
     print('delta_files: Optional. A yaml string list of files to generate a binary delta of. Very useful for large\n'
           'mail store files. At first, a full copy of the file is made. On subsequent backups, if a full version is\n'
           'found in the earlier backups then a binary delta from the earlier full version is stored. Given the\n'
-          'YYYY-MM-DD format, the routine looks for YYYY-MM-??, basically any full copy within the current month. This\n'
-          'option requires the utility xdelta3.exe to be on the path. This option is incompatible with "use_date: false"')
-    print('use_date: Optional, default true. true or false. Sets whether a date encoded subdirectory should be created\n'
-          'under the dest: directory. Useful if copying a set of already dated archives to a new destination')
+          'YYYY-MM-DD format, the routine looks for YYYY-MM-??, basically any full copy within the current month.\n'
+          'This option requires the utility xdelta3.exe to be on the path. This option is incompatible with\n'
+          '"use_date: false"')
+    print('use_date: Optional, default true. true or false. Sets whether a date encoded subdirectory should be\n'
+          'created under the dest: directory. Useful if copying a set of already dated archives to a new destination')
     print('always_hash_source: Optional, default false. If true, source files are hashed every time. If false, size\n'
           'and timestamps are used to determine if a source file has changed.')
     print('always_hash_target: Optional, default false. If true, at start hash targets in the dest directory are\n'
@@ -595,8 +597,8 @@ def print_help() -> None:
           'option requires the backup directories lexicographically sort in date order. Timestamps are not used. Any\n'
           'hash targets in the directories to be removed are repointed to existing hardlinks or removed from the list\n'
           'if no other hardlinks exist.')
-    print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true. Useful\n'
-          'to occasionally check the target files are correct without tracking the last time they were checked.')
+    print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true.\n'
+          'Useful to occasionally check the target files are correct without tracking the last time they were checked.')
     print('no_hash_files: Optional. If any of these files are backed up, the hash is not saved in the destination\n'
           'hash table. Useful for log files that are changing from the back up itself.')
 
