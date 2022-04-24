@@ -20,8 +20,8 @@ import random
 
 
 class FileInfo:
-    def __init__(self, path: str=None, hash_val: str=None, stat_info: os.stat_result=None,
-                 csv_row: typing.List[str]=None):
+    def __init__(self, path: str = None, hash_val: str = None, stat_info: os.stat_result = None,
+                 csv_row: typing.List[str] = None):
         if csv_row:
             self.path = csv_row[0]
             self.hash_val = csv_row[1]
@@ -209,7 +209,7 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str]) -> (int
             # last two characters of backup_dir should be day. Replace them with '?'
             search_path: str = backup_dir[:-2] + '??'
             bdirs: typing.List[str] = glob.glob(search_path)
-            full_backup: str = None
+            full_backup: typing.Optional[str] = None
             for bdir in bdirs:
                 check_path: str = dest_path_from_source_path(bdir, source)
                 if os.path.exists(check_path):
@@ -288,7 +288,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                     (attributes & 0x400000) == 0 and \
                     (attributes & 0x40000) == 0:
                 sr: os.stat_result = os.stat(file_path)
-                info: FileInfo = None
+                info: typing.Optional[FileInfo] = None
                 if not always_hash_source:
                     with hash_source_lock:
                         if file_path in hash_sources:
@@ -303,7 +303,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                         hash_sources[file_path] = FileInfo(file_path, hash_val, sr)
                 dest_path: str = dest_path_from_source_path(backup_dir, file_path)
                 use_copy: bool = True
-                target_val: FileInfo = None
+                target_val: typing.Optional[FileInfo] = None
                 # It's possible for two threads to be working on files with the same hash.
                 # This is undesirable because we will miss hard linking opportunities.
                 # Create a lock per unique hash so only one thread can be copying/linking a hash at any one time.
@@ -455,7 +455,7 @@ def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
             file_path: str = delete_queue.get_nowait()
         except queue.Empty:
             return
-        exterior_path: str = None
+        exterior_path: typing.Optional[str] = None
         paths_to_delete: typing.List[str] = [file_path]
         hard_links: typing.List[str] = get_hardlinks(file_path)
         for link in hard_links:
