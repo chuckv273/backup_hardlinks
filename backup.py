@@ -79,13 +79,13 @@ def run_threaded(func, args) -> None:
     if isinstance(args, tuple) and len(args) > 0 and isinstance(args[0], queue.Queue):
         while not args[0].empty() and threads[0].is_alive():
             log_msg('Run threaded: queue size {:,}'.format(args[0].qsize()))
-            threads[0].join(300)
+            threads[0].join(600)
     for thread in threads:
         thread.join()
 
 
 def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo], removal_q: queue.Queue,
-                           addition_q: queue.Queue, always_check_hash: bool) -> None:
+                           always_check_hash: bool) -> None:
     while True:
         try:
             index: int = work_q.get_nowait()
@@ -102,7 +102,6 @@ def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo
                     else:
                         log_msg('Mismatch file info: {}'.format(file_infos[index].path))
                     removal_q.put(index)
-                    addition_q.put(FileInfo(file_infos[index].path, hash_val, sr))
         except OSError:
             log_msg('File deleted: {}'.format(file_infos[index].path))
             removal_q.put(index)
@@ -112,19 +111,16 @@ def check_file_info_worker(work_q: queue.Queue, file_infos: typing.List[FileInfo
 def check_file_info(file_infos: typing.List[FileInfo], always_check_hash: bool) -> None:
     work_queue: queue.Queue = queue.Queue()
     removal_q: queue.Queue = queue.Queue()
-    addition_q: queue.Queue = queue.Queue()
     for i in range(len(file_infos)):
         work_queue.put(i)
     log_msg('check_file_info, work size: {:,}'.format(len(file_infos)))
-    run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, addition_q, always_check_hash))
+    run_threaded(check_file_info_worker, (work_queue, file_infos, removal_q, always_check_hash))
     removals: typing.List[int] = []
     while not removal_q.empty():
         removals.append(removal_q.get_nowait())
     removals.sort(reverse=True)
     for i in removals:
         file_infos.pop(i)
-    while not addition_q.empty():
-        file_infos.append(addition_q.get_nowait())
 
 
 def check_file_info_exists(file_infos: typing.List[FileInfo]) -> None:
@@ -143,13 +139,23 @@ def check_file_info_exists(file_infos: typing.List[FileInfo]) -> None:
 
 def populate_file_infos(file_infos: typing.List[FileInfo], file_name: str) -> None:
     try:
-        csvfile = open(file_name, 'r', newline='')
+        csvfile = open(file_name, 'r', newline='', encoding='utf-8')
         reader = csv.reader(csvfile)
         for row in reader:
             file_infos.append(FileInfo(csv_row=row))
         csvfile.close()
     except OSError as error:
         log_msg('Error reading csv: {}, {}', format(file_name, str(error)))
+    except UnicodeDecodeError:
+        log_msg('Unicode error reading {}. Try agin with no encoding'.format(file_name))
+        # try again without utf-8, previous versions used no encoding
+        csvfile.close()
+        csvfile = open(file_name, 'r', newline='')
+        file_infos.clear()
+        reader = csv.reader(csvfile)
+        for row in reader:
+            file_infos.append(FileInfo(csv_row=row))
+        csvfile.close()
 
 
 def populate_hash_dict(hash_dict: typing.Dict[str, FileInfo], file_name: str, check_hashes: bool) -> None:
@@ -170,7 +176,7 @@ def populate_name_dict(name_dict: typing.Dict[str, FileInfo], file_name: str, ch
 
 
 def write_file_infos(info_dict: typing.Dict[str, FileInfo], file_name: str) -> None:
-    csvfile = open(file_name, 'w', newline='')
+    csvfile = open(file_name, 'w', newline='', encoding='utf-8')
     writer = csv.writer(csvfile)
     for info in info_dict.values():
         writer.writerow(info.make_csv_row())
@@ -421,6 +427,8 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     #  rather than writing.
     if always_hash_target:
         populate_hash_dict(hash_targets, dest_hash_csv, True)
+        # Entries that didn't match are removed. Re-write the hash list just in case
+        write_file_infos(hash_targets, dest_hash_csv)
     for hash_name in [dest_hash_csv, source_hash_csv]:
         hash_dest_path = dest_path_from_source_path(backup_dir, hash_name)
         # it's possible the file was already included in the backup. Don't copy over if so.
