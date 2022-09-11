@@ -332,16 +332,18 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                         log_msg('File {} matches existing hash.'.format(file_path))
                     # make link
                     try:
-                        os.link(target_val.path, dest_path)
+                        win32file.CreateHardLink(dest_path, target_val.path)
                         linked_files += 1
                         linked_size += sr.st_size
                         use_copy = False
                     except OSError:
                         pass
+                    except pywintypes.error:
+                        pass
                 if use_copy:
                     # copy new file
                     log_msg('new file {}, size {:,}'.format(file_path, sr.st_size))
-                    shutil.copy2(file_path, dest_path)
+                    win32file.CopyFile(file_path, dest_path, True)
                     win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
                     sr: os.stat_result = os.stat(dest_path)
                     new_bytes += sr.st_size
@@ -477,8 +479,10 @@ def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
             win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
             try:
                 for path in paths_to_delete:
-                    os.remove(path)
+                    win32file.DeleteFile(path)
             except OSError as error:
+                log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
+            except pywintypes.error as error:
                 log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
         except OSError as error:
             log_msg('Exception removing read-only attribute {}, {}'.format(file_path, str(error)))
