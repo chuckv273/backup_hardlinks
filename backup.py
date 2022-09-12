@@ -338,7 +338,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                         use_copy = False
                     except OSError:
                         pass
-                    except pywintypes.error:
+                    except win32file.error:
                         pass
                 if use_copy:
                     # copy new file
@@ -482,7 +482,7 @@ def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
                     win32file.DeleteFile(path)
             except OSError as error:
                 log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
-            except pywintypes.error as error:
+            except win32file.error as error:
                 log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
         except OSError as error:
             log_msg('Exception removing read-only attribute {}, {}'.format(file_path, str(error)))
@@ -612,7 +612,8 @@ def print_help() -> None:
     print('hash_dest_random: Optional, numeric int [0-100]. Percent probability to set always_hash_target true.\n'
           'Useful to occasionally check the target files are correct without tracking the last time they were checked.')
     print('no_hash_files: Optional. If any of these files are backed up, the hash is not saved in the destination\n'
-          'hash table. Useful for log files that are changing from the back up itself.')
+          'hash table. Useful for log files that are changing from the back up itself. If the text "<date>" appears\n'
+          'in the value, it is replaced with the current date, YYYY-MM-DD')
 
 
 def main():
@@ -682,7 +683,15 @@ def main():
                 hash_dest_random = config['hash_dest_random']
             no_hash_files = []
             if 'no_hash_files' in config:
-                no_hash_files = config['no_hash_files']
+                date_string = date.today().strftime('%Y-%m-%d')
+                date_tag = '<date>'
+                no_hash_files = []
+                pre_replace = config['no_hash_files']
+                for item in pre_replace:
+                    if date_tag in item:
+                        no_hash_files.append(item.replace(date_tag, date_string))
+                    else:
+                        no_hash_files.append(item)
             print('dest: {}'.format(config['dest']))
             print('sources: {}'.format(config['sources']))
             print('dest_hashes: {}'.format(config['dest_hashes']))
