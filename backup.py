@@ -51,8 +51,13 @@ log_lock = threading.Lock()
 
 
 def log_msg(*args):
+    tidstr = str(threading.get_ident())
+    sln = len(tidstr)
+    target_len = 5
+    if sln < target_len:
+        tidstr += ' ' * (target_len-sln)
     with log_lock:
-        print(time.strftime('%H:%M:%S '), threading.get_ident(), ' ', *args, flush=True)
+        print(time.strftime('%H:%M:%S '), tidstr, ' ', *args, flush=True)
 
 
 def hash_file(file_path: str) -> str:
@@ -194,8 +199,13 @@ def dest_path_from_source_path(backup_dir: str, source_path: str) -> str:
     # join ignores empty elements, so it's OK if drive is empty
     return os.path.join(backup_dir, drive, path)
 
+def append_file_info(file_info: FileInfo, file_name: str) -> None:
+    csvfile = open(file_name, 'a', newline='', encoding='utf-8')
+    writer = csv.writer(csvfile)
+    writer.writerow(file_info.make_csv_row())
+    csvfile.close()
 
-def generate_delta_files(backup_dir: str, delta_files: typing.List[str]) -> (int, int):
+def generate_delta_files(backup_dir: str, delta_files: typing.List[str], csv_file_name: str) -> (int, int):
     file_size: int = 0
     file_count: int = 0
     for source in delta_files:
@@ -238,11 +248,14 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str]) -> (int
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
+            hash_val = hash_file(target_name)
+            file_info = FileInfo(target_name, hash_val, stat_result)
+            append_file_info(file_info, csv_file_name)
     log_msg('Delta, new files: {:,}, bytes: {:,}'.format(file_count, file_size))
     return file_count, file_size
 
 
-def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -> (int, int):
+def generate_compressed_files(backup_dir: str, source_files: typing.List[str], csv_file_name: str) -> (int, int):
     file_size: int = 0
     file_count: int = 0
     for source in source_files:
@@ -266,6 +279,9 @@ def generate_compressed_files(backup_dir: str, source_files: typing.List[str]) -
             file_count += 1
             file_size += stat_result.st_size
             win32api.SetFileAttributes(target_name, win32con.FILE_ATTRIBUTE_READONLY)
+            hash_val = hash_file(target_name)
+            file_info = FileInfo(target_name, hash_val, stat_result)
+            append_file_info(file_info, csv_file_name)
     log_msg('Compress, new files: {:,}, bytes: {:,}'.format(file_count, file_size))
     return file_count, file_size
 
@@ -356,7 +372,9 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                 if hash_lock:
                     hash_lock.release()
             else:
-                log_msg('Skipping dehydrated file {}'.format(file_path))
+                # Too much logging when there are many dehydrated files.
+                # log_msg('Skipping dehydrated file {}'.format(file_path))
+                pass
 
         except (OSError, win32api.error) as error:
             log_msg('Exception handling file {}, {}'.format(file_path, str(error)))
@@ -537,7 +555,7 @@ def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) ->
         if dir_entry.is_dir():
             subdirs.append(dir_entry.name)
     log_msg('Checking excess. Max count: {}, directory count: {}'.format(max_backup_count, len(subdirs)))
-    if len(subdirs) > max_backup_count:
+    if len(subdirs) > max_backup_count and max_backup_count > 0:
         subdirs.sort()
         subdirs = subdirs[:len(subdirs) - max_backup_count]
         hash_dest: typing.Dict[str, FileInfo] = {}
@@ -568,13 +586,17 @@ def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) ->
 
 def print_help() -> None:
     print('backup.py - Backup with hardlinks')
-    print('python backup.py config_file [-help]')
+    print('python backup.py config_file [-details] [-date_override <date_text>] [-no_backup]')
     print('This script maintains a catalog of hashes on the backup source and target. When creating a new backup file\n'
           'this allows us to hardlink the new files rather than copying a new set of bits. The first backup set\n'
           'consumes the full size, but later sets only use space for new or changed content. Unchanged files only\n'
           'require a hardlink\n')
+    print('-details: print this help text')
+    print('-date_override <date_text>: Use <date_text> instead of current date for backup subdirectory. Useful for\n'
+          'copy dated backups.')
+    print('-no_backup: Do not execute backup, but do any deletions (i.e. check max_backup_count)')
     print('Options are stored in a yaml config file. All path comparisons are case sensitive. You must write any path\n'
-          'exactly as the OS presents it.\n')
+          'exactly as the OS presents it.')
     print('sources: Required. A yaml string list of source directories. Each directory is fully traversed during the\n'
           'backup.')
     print('dest: Required. The path to the backup destination. Backups become subdirectories as YYYY-MM-DD.')
@@ -595,6 +617,8 @@ def print_help() -> None:
           'YYYY-MM-DD format, the routine looks for YYYY-MM-??, basically any full copy within the current month.\n'
           'This option requires the utility xdelta3.exe to be on the path. This option is incompatible with\n'
           '"use_date: false"')
+    print('compressed_files: Optional. A yaml string list of files to to store as a zip file. A good counterpoint to\n'
+          'delta_files when requiring an earlier full file is not an option.')
     print('use_date: Optional, default true. true or false. Sets whether a date encoded subdirectory should be\n'
           'created under the dest: directory. Useful if copying a set of already dated archives to a new destination')
     print('always_hash_source: Optional, default false. If true, source files are hashed every time. If false, size\n'
@@ -722,10 +746,10 @@ def main():
                 if 'delta_files' in config:
                     log_msg('delta_files: {}'.format(config['delta_files']))
                     # since we made a delta of the file, make sure we skip it during the actual backup
-                    # it's possible the delta file is included in the traversal of the main backup
+                    # it's possible the delta source file is included in the traversal of the main backup
                     skip_files.extend(config['delta_files'])
                     try:
-                        counts = generate_delta_files(backup_dir, config['delta_files'])
+                        counts = generate_delta_files(backup_dir, config['delta_files'], config['dest_hashes'])
                         new_files += counts[0]
                         new_bytes += counts[1]
                     except OSError as error:
@@ -736,7 +760,7 @@ def main():
                     # it's possible the zip file is included in the traversal of the main backup
                     skip_files.extend(config['compressed_files'])
                     try:
-                        counts = generate_compressed_files(backup_dir, config['compressed_files'])
+                        counts = generate_compressed_files(backup_dir, config['compressed_files'], config['dest_hashes'])
                         new_files += counts[0]
                         new_bytes += counts[1]
                     except OSError as error:
