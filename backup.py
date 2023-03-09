@@ -166,7 +166,8 @@ def populate_file_infos(file_infos: typing.List[FileInfo], file_name: str) -> No
 def populate_hash_dict(hash_dict: typing.Dict[str, FileInfo], file_name: str, check_hashes: bool) -> None:
     file_infos: typing.List[FileInfo] = []
     populate_file_infos(file_infos, file_name)
-    check_file_info(file_infos, check_hashes)
+    if check_hashes:
+        check_file_info(file_infos, check_hashes)
     for info in file_infos:
         hash_dict[info.hash_val] = info
 
@@ -477,71 +478,60 @@ def get_hardlinks(path: str) -> typing.List[str]:
     return hardlinks
 
 
-def remove_tree_worker(delete_queue: queue.Queue, root: str) -> None:
+def set_read_only_worker(ro_queue: queue.Queue, dummy_arg):
+    while True:
+        try:
+            file_path: str = ro_queue.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_READONLY)
+        except:
+            pass
+        ro_queue.task_done()
+
+
+def set_read_only(dir_path: str) -> None:
+    log_msg('Set read only: {}'.format(dir_path))
+    ro_queue: queue.Queue = queue.Queue()
+    for (dpath, dnames, fnames) in os.walk(dir_path):
+        for file_name in fnames:
+            file_path = os.path.join(dpath, file_name)
+            ro_queue.put(file_path)
+    # dummy arg is needed to generate a tuple
+    run_threaded(set_read_only_worker, (ro_queue, 'dummy_arg'))
+
+
+def remove_tree_worker(delete_queue: queue.Queue, dummy_arg) -> None:
+    # previously this function checked the hard link list, but that had poor preformance
+    # now the caller clears the read_only flag for the entire tree and the delete
+    # can execute more quickly
     while True:
         try:
             file_path: str = delete_queue.get_nowait()
         except queue.Empty:
             return
-        exterior_path: typing.Optional[str] = None
-        paths_to_delete: typing.List[str] = [file_path]
-        hard_links: typing.List[str] = get_hardlinks(file_path)
-        for link in hard_links:
-            if link.startswith(root):
-                paths_to_delete.append(link)
-            else:
-                exterior_path = link
-        if not exterior_path:
-            log_msg('Deleting file: {}'.format(file_path))
         try:
             win32api.SetFileAttributes(file_path, win32con.FILE_ATTRIBUTE_NORMAL)
-            try:
-                for path in paths_to_delete:
-                    win32file.DeleteFile(path)
-            except OSError as error:
-                log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
-            except win32file.error as error:
-                log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
+            win32file.DeleteFile(file_path)
         except OSError as error:
-            log_msg('Exception removing read-only attribute {}, {}'.format(file_path, str(error)))
-        if exterior_path:
-            try:
-                win32api.SetFileAttributes(exterior_path, win32con.FILE_ATTRIBUTE_READONLY)
-            except OSError:
-                pass
+            log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
+        except win32file.error as error:
+            log_msg('Exception removing file {}, {}'.format(file_path, str(error)))
         delete_queue.task_done()
-
-
-def walk_tree_worker(walk_queue: queue.Queue, delete_queue: queue.Queue, file_ids: set, id_lock: threading.Lock)\
-                    -> None:
-    while True:
-        try:
-            file_path: str = walk_queue.get_nowait()
-        except queue.Empty:
-            return
-        s_info: os.stat_result = os.stat(file_path)
-        with id_lock:
-            if s_info.st_ino not in file_ids:
-                file_ids.add(s_info.st_ino)
-                delete_queue.put(file_path)
-        walk_queue.task_done()
 
 
 def remove_tree(path: str) -> None:
     log_msg('Remove tree: {}'.format(path))
-    delete_queue: queue.Queue = queue.Queue()
-    file_ids: set = set()
     walk_queue: queue.Queue = queue.Queue()
-    id_lock: threading.Lock = threading.Lock()
     log_msg('Generating deletion list.')
     for (dpath, dnames, fnames) in os.walk(path):
         for file_name in fnames:
             file_path = os.path.join(dpath, file_name)
             walk_queue.put(file_path)
-    log_msg('Walk list size: {:,}'.format(walk_queue.qsize()))
-    run_threaded(walk_tree_worker, (walk_queue, delete_queue, file_ids, id_lock))
-    log_msg('Delete list size {:,}'.format(delete_queue.qsize()))
-    run_threaded(remove_tree_worker, (delete_queue, path))
+    log_msg('Delete list size {:,}'.format(walk_queue.qsize()))
+    # dummy arg is needed to generate a tuple
+    run_threaded(remove_tree_worker, (walk_queue, 'dummy_arg'))
     try:
         shutil.rmtree(path, True)
     except OSError as error:
@@ -557,10 +547,11 @@ def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) ->
     log_msg('Checking excess. Max count: {}, directory count: {}'.format(max_backup_count, len(subdirs)))
     if len(subdirs) > max_backup_count and max_backup_count > 0:
         subdirs.sort()
-        subdirs = subdirs[:len(subdirs) - max_backup_count]
+        count_to_delete = len(subdirs) - max_backup_count
+        subdirs_to_delete = subdirs[:count_to_delete]
         hash_dest: typing.Dict[str, FileInfo] = {}
         populate_name_dict(hash_dest, dest_hashes_csv, False)
-        for subdir in subdirs:
+        for subdir in subdirs_to_delete:
             path_prefix: str = os.path.join(dest_dir, subdir)
             log_msg('Removing directory: {}'.format(path_prefix))
             deletions: typing.List[str] = []
@@ -582,6 +573,8 @@ def delete_excess(dest_dir: str, dest_hashes_csv: str, max_backup_count: int) ->
             # write the new hash list before attempting delete, in case of an error
             write_file_infos(hash_dest, dest_hashes_csv)
             remove_tree(path_prefix)
+        set_read_only(os.path.join(dest_dir, subdirs[count_to_delete]))
+
 
 
 def print_help() -> None:
