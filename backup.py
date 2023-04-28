@@ -296,11 +296,12 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
     linked_size: int = 0
     new_bytes: int = 0
     new_files: int = 0
+    dehyd_files: int = 0
     while True:
         try:
             file_path: str = source_queue.get_nowait()
         except queue.Empty:
-            results_queue.put((linked_files, linked_size, new_bytes, new_files))
+            results_queue.put((linked_files, linked_size, new_bytes, new_files, dehyd_files))
             return
         try:
             attributes: int = win32api.GetFileAttributes(file_path)
@@ -375,6 +376,7 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
             else:
                 # Too much logging when there are many dehydrated files.
                 # log_msg('Skipping dehydrated file {}'.format(file_path))
+                dehyd_files += 1
                 pass
 
         except (OSError, win32api.error) as error:
@@ -410,6 +412,7 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     new_files: int = 0
     linked_files: int = 0
     linked_size: int = 0
+    dehyd_files: int = 0
     source_queue: queue.Queue = queue.Queue()
     for source_dir in sources:
         for (dpath, dnames, fnames) in os.walk(source_dir):
@@ -436,11 +439,12 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
     run_threaded(backup_worker, (source_queue, backup_dir, hash_sources, source_lock, always_hash_source, hash_targets,
                                  target_lock, per_hash_locks, results, latest_only_dirs, no_hash_files))
     while not results.empty():
-        lf, ls, ns, nf = results.get_nowait()
+        lf, ls, ns, nf, df = results.get_nowait()
         linked_files += lf
         linked_size += ls
         new_bytes += ns
         new_files += nf
+        dehyd_files += df
     write_file_infos(hash_targets, dest_hash_csv)
     write_file_infos(hash_sources, source_hash_csv)
     # Move checking destination hashes to after the backup is done.
@@ -459,6 +463,7 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
             shutil.copy2(hash_name, hash_dest_path)
     log_msg('Link count: {:,}, linked size: {:,}'.format(linked_files, linked_size))
     log_msg('New files count: {:,}, size: {:,}'.format(new_files, new_bytes))
+    log_msg('dehydrated files: {:,}'.format(dehyd_files))
     log_msg('Total files: {:,}, total size: {:,}'.format(linked_files+new_files, linked_size+new_bytes))
     return new_files, new_bytes
 
