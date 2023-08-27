@@ -216,11 +216,15 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str], csv_fil
             test_file = open(source, 'rb')
             test_file.close()
             available = True
+            mtime = os.path.getmtime(source)
+            lt = time.localtime(mtime)
+            log_msg('Source {} modified {}'.format(source, time.strftime('%Y-%m-%d %H:%M', lt)))
         except OSError:
             log_msg('File {} is not available. Skipping.'.format(source))
             available = False
 
         if available and len(backup_dir) > 4:
+            st_info = os.stat()
             os.makedirs(os.path.split(target_name)[0], exist_ok=True)
             # look for previous backups from which to make a delta
             # last two characters of backup_dir should be day. Replace them with '?'
@@ -240,8 +244,11 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str], csv_fil
                 log_msg('Full backup found: {}. Generating delta.'.format(full_backup))
                 target_name = target_name + '.patch'
                 log_msg('Calling xdelta3 full={}, source={}, target={}'.format(full_backup, source, target_name))
-                subprocess.call(['xdelta3.exe', '-e', '-B', '1000000000', '-W', '16777216', '-s', full_backup, source,
-                                 target_name])
+                pr = subprocess.run(args=['xdelta3.exe', '-e', '-B', '1000000000', '-W', '16777216', '-s', full_backup, source,
+                                 target_name], capture_output=True, text=True)
+                log_msg('xdelta3 return code: {}'.format(pr.returncode))
+                log_msg('xdelta3 stdout: {}'.format(pr.stdout))
+                log_msg('xdelta3 stderr: {}'.format(pr.stderr))
             else:
                 log_msg('Copying source: {}.'.format(source))
                 shutil.copy2(source, target_name)
@@ -266,6 +273,9 @@ def generate_compressed_files(backup_dir: str, source_files: typing.List[str], c
             test_file = open(source, 'rb')
             test_file.close()
             available = True
+            mtime = os.path.getmtime(source)
+            lt = time.localtime(mtime)
+            log_msg('Source {} modified {}'.format(source, time.strftime('%Y-%m-%d %H:%M', lt)))
         except OSError:
             log_msg('File {} is not available. Skipping.'.format(source))
             available = False
@@ -349,30 +359,42 @@ def backup_worker(source_queue: queue.Queue, backup_dir: str, hash_sources: typi
                     if os.path.dirname(file_path) in latest_only_dirs:
                         log_msg('File {} matches existing hash.'.format(file_path))
                     # make link
-                    try:
-                        win32file.CreateHardLink(dest_path, target_val.path)
-                        linked_files += 1
-                        linked_size += sr.st_size
+                    # In the case of an error in a previous backup, the file might exist. If so, we don't need to make
+                    # another link
+                    if os.path.exists(dest_path):
                         use_copy = False
-                    except OSError:
-                        pass
-                    except win32file.error:
-                        pass
+                    else:
+                        try:
+                            win32file.CreateHardLink(dest_path, target_val.path)
+                            linked_files += 1
+                            linked_size += sr.st_size
+                            use_copy = False
+                        except OSError:
+                            pass
+                        except win32file.error:
+                            pass
                 if use_copy:
                     # copy new file
                     log_msg('new file {}, size {:,}'.format(file_path, sr.st_size))
-                    win32file.CopyFile(file_path, dest_path, True)
-                    win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
-                    sr: os.stat_result = os.stat(dest_path)
-                    new_bytes += sr.st_size
-                    new_files += 1
-                    if file_path not in no_hash_files:
-                        with hash_target_lock:
-                            hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
-                    else:
-                        log_msg('Not including {} in hash table.'.format(file_path))
+                    try:
+                        # If the file already exists (possibly from a failed backup), overwrite it. It might be a partial
+                        # copy
+                        win32file.CopyFile(file_path, dest_path, False)
+                        win32api.SetFileAttributes(dest_path, win32con.FILE_ATTRIBUTE_READONLY)
+                        sr: os.stat_result = os.stat(dest_path)
+                        new_bytes += sr.st_size
+                        new_files += 1
+                        if file_path not in no_hash_files:
+                            with hash_target_lock:
+                                hash_targets[hash_val] = FileInfo(dest_path, hash_val, sr)
+                        else:
+                            log_msg('Not including {} in hash table.'.format(file_path))
+                    except OSError as error:
+                        log_msg('Failed copy {} -> {}. Error {}'.format(file_path, dest_path, str(error)))
+                    except win32file.error as error:
+                        log_msg('Failed copy {} -> {}. Error {}'.format(file_path, dest_path, str(error)))
                 if hash_lock:
-                    hash_lock.release()
+                        hash_lock.release()
             else:
                 # Too much logging when there are many dehydrated files.
                 # log_msg('Skipping dehydrated file {}'.format(file_path))
@@ -472,14 +494,24 @@ def do_backup(backup_dir: str, sources: typing.List[str], dest_hash_csv: str, so
 def get_hardlinks(path: str) -> typing.List[str]:
     drive, no_drive_path = os.path.splitdrive(path)
     hardlinks: typing.List[str] = []
-    temp_names: typing.List[str] = win32file.FindFileNames(path)
-    # the response from win32file.FindFileNames needs some fixup
-    # We need to add the drive letter and remove the trailing NUL
-    for t_name in temp_names:
-        fixed_name: str = t_name[:-1]
-        # don't include the original path
-        if fixed_name != no_drive_path:
-            hardlinks.append(drive + fixed_name)
+    try:
+        temp_names: typing.List[str] = win32file.FindFileNames(path)
+        # the response from win32file.FindFileNames needs some fixup
+        # We need to add the drive letter and possibly remove the trailing NUL
+        # Older versions of win32file had a trailing null. Newer do not. Check the last value.
+        for t_name in temp_names:
+            if t_name[-1] == '\x00':
+                fixed_name: str = t_name[:-1]
+            else:
+                fixed_name: str = t_name
+            # don't include the original path
+            if fixed_name != no_drive_path:
+                hardlinks.append(drive + fixed_name)
+    except OSError as error:
+        log_msg('Exception finding hardlinks {}, {}'.format(path, str(error)))
+    except win32file.error as error:
+        log_msg('Exception finding hardlinks {}, {}'.format(path, str(error)))
+
     return hardlinks
 
 
@@ -591,7 +623,7 @@ def print_help() -> None:
           'require a hardlink\n')
     print('-details: print this help text')
     print('-date_override <date_text>: Use <date_text> instead of current date for backup subdirectory. Useful for\n'
-          'copy dated backups.')
+          'copying dated backups.')
     print('-no_backup: Do not execute backup, but do any deletions (i.e. check max_backup_count)')
     print('Options are stored in a yaml config file. All path comparisons are case sensitive. You must write any path\n'
           'exactly as the OS presents it.')
