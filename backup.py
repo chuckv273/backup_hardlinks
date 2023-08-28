@@ -224,7 +224,6 @@ def generate_delta_files(backup_dir: str, delta_files: typing.List[str], csv_fil
             available = False
 
         if available and len(backup_dir) > 4:
-            st_info = os.stat()
             os.makedirs(os.path.split(target_name)[0], exist_ok=True)
             # look for previous backups from which to make a delta
             # last two characters of backup_dir should be day. Replace them with '?'
